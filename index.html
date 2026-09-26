@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>온수 도로주행 연습</title>
+<style>
+  :root { --panel: rgba(18, 22, 28, 0.78); --line: rgba(255, 255, 255, 0.12); --accent: #ffd60a; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #111; color: #eef1f4;
+    font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif; }
+  #app canvas { display: block; }
+  .panel { position: fixed; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; backdrop-filter: blur(4px); }
+
+  #instr { top: 14px; left: 14px; width: 360px; padding: 12px 14px 10px; }
+  #instr-title { font-size: 21px; font-weight: 700; color: var(--accent); }
+  #instr-sub { font-size: 14px; margin-top: 4px; line-height: 1.4; }
+  #instr-next { font-size: 12.5px; margin-top: 8px; opacity: 0.7; }
+  #progress-wrap { height: 4px; background: var(--line); border-radius: 2px; margin-top: 8px; overflow: hidden; }
+  #progress { height: 100%; width: 0; background: #3fa9ff; }
+  #instr.pulse { animation: pulse 0.9s ease-out; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(255, 214, 10, 0.8); } 100% { box-shadow: 0 0 0 16px rgba(255, 214, 10, 0); } }
+
+  #mirror-frame { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); width: 368px; height: 98px;
+    border: 4px solid #15181b; border-radius: 14px; pointer-events: none; box-shadow: 0 3px 10px rgba(0,0,0,.5); }
+
+  #mapbox { top: 14px; right: 14px; padding: 6px; }
+  #minimap { display: block; border-radius: 6px; }
+  #mapbox small { display: block; font-size: 11px; opacity: 0.65; text-align: center; margin-top: 3px; }
+
+  #dash { left: 14px; bottom: 14px; padding: 10px 16px; display: flex; align-items: center; gap: 16px; }
+  #speed { font-size: 46px; font-weight: 800; font-variant-numeric: tabular-nums; min-width: 72px; text-align: right; }
+  #speed.over { color: #ff5a4f; }
+  .unit { font-size: 12px; opacity: 0.7; }
+  .limit { width: 46px; height: 46px; border-radius: 50%; background: #fff; border: 6px solid #d62020; color: #111;
+    display: grid; place-items: center; font-weight: 800; font-size: 16px; font-family: Arial, sans-serif; }
+  #gear { font-size: 26px; font-weight: 800; width: 34px; text-align: center; border: 2px solid var(--line); border-radius: 6px; }
+  .blink { font-size: 28px; color: #3a4a3a; }
+  .blink.on { color: #3dff6e; text-shadow: 0 0 10px #3dff6e; }
+
+  #scorebox { right: 14px; bottom: 14px; width: 290px; padding: 10px 14px; }
+  #scorebox .row { display: flex; justify-content: space-between; align-items: baseline; }
+  #score { font-size: 30px; font-weight: 800; }
+  #log { margin-top: 6px; font-size: 13px; }
+  .pen { padding: 3px 0; border-top: 1px solid var(--line); color: #ffb4ad; }
+
+  #toast { position: fixed; top: 34%; left: 50%; transform: translateX(-50%); font-size: 22px; font-weight: 700;
+    background: rgba(200, 30, 30, 0.85); padding: 8px 18px; border-radius: 8px; opacity: 0; pointer-events: none; }
+  #toast.show { animation: toast 2.2s ease-out; }
+  @keyframes toast { 0%, 70% { opacity: 1; } 100% { opacity: 0; } }
+
+  #keys { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); font-size: 12px; opacity: 0.75;
+    background: rgba(0,0,0,.45); padding: 5px 10px; border-radius: 6px; white-space: nowrap; }
+  kbd { background: #2c323a; border: 1px solid #555; border-radius: 3px; padding: 0 4px; font-family: inherit; }
+
+  .overlay { position: fixed; inset: 0; background: rgba(8, 10, 14, 0.72); display: grid; place-items: center; z-index: 10; }
+  .overlay[hidden] { display: none; }
+  .card { background: #1a1f26; border: 1px solid var(--line); border-radius: 14px; padding: 26px 30px; max-width: 640px; width: calc(100% - 32px); }
+  .card h1 { margin: 0 0 4px; font-size: 26px; }
+  .card h2 { margin: 0 0 12px; font-size: 15px; font-weight: 400; opacity: 0.75; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 14px; text-align: center; }
+  th, td { border: 1px solid #3a424c; padding: 6px; }
+  th { background: #f2d600; color: #111; }
+  .card ul { margin: 8px 0; padding-left: 20px; line-height: 1.7; font-size: 14px; }
+  button { background: var(--accent); color: #111; border: 0; border-radius: 8px; padding: 10px 22px; font-size: 16px; font-weight: 700; cursor: pointer; font-family: inherit; }
+  button.ghost { background: #2c333c; color: #eee; }
+  .btns { display: flex; gap: 10px; margin-top: 16px; }
+  #result-title.pass { color: #3dff9e; } #result-title.fail { color: #ff6b5f; }
+  #result-log { max-height: 220px; overflow: auto; }
+  #bigmap-wrap { position: fixed; inset: 40px; display: grid; place-items: center; background: rgba(10, 12, 16, 0.85); border-radius: 12px; z-index: 5; }
+  #bigmap-wrap[hidden] { display: none; }
+  #start .card { max-width: 980px; max-height: calc(100vh - 40px); overflow: auto; }
+  .courses { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 14px 0; }
+  @media (max-width: 900px) { .courses { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .course { background: #232a33; border: 1px solid #3a424c; border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .course h3 { margin: 0; font-size: 20px; color: var(--accent); }
+  .course table { margin: 0; font-size: 12px; }
+  .course th, .course td { padding: 3px 2px; }
+  .course ol { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.55; flex: 1; }
+  .course button { width: 100%; }
+  .keys-help { font-size: 13px; opacity: 0.85; line-height: 1.7; }
+  #sig { display: flex; gap: 4px; background: #15181b; border-radius: 6px; padding: 4px 6px; }
+  #sig[hidden] { display: none; }
+  #sig span { width: 18px; height: 18px; border-radius: 50%; background: #2b2f33; display: grid; place-items: center; font-size: 12px; color: #111; font-weight: 900; }
+  #sig span[hidden] { display: none; }
+  #sig-r.on { background: #ff2d1a; box-shadow: 0 0 8px #ff2d1a; }
+  #sig-y.on { background: #ffb300; box-shadow: 0 0 8px #ffb300; }
+  #sig-a.on, #sig-g.on { background: #14e38a; box-shadow: 0 0 8px #14e38a; }
+  #course-name { font-size: 12px; opacity: 0.7; margin-bottom: 2px; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="app"></div>
+
+<div id="instr" class="panel">
+  <div id="course-name">A코스</div>
+  <div id="instr-title">코스 선택</div>
+  <div id="instr-sub">A·B·C·D 코스 중 하나를 고르세요</div>
+  <div id="instr-next"></div>
+  <div id="progress-wrap"><div id="progress"></div></div>
+</div>
+<div id="mirror-frame"></div>
+<div id="mapbox" class="panel"><canvas id="minimap" width="230" height="230"></canvas><small>위 = 남 (학원 안내도와 같은 방향) · <kbd>M</kbd> 전체</small></div>
+
+<div id="dash" class="panel">
+  <span class="blink" id="blink-l">◀</span>
+  <div><div id="speed">0</div><div class="unit" style="text-align:right">km/h</div></div>
+  <div class="limit" id="limit">50</div>
+  <div id="sig" hidden title="전방 신호"><span id="sig-r"></span><span id="sig-y"></span><span id="sig-a">←</span><span id="sig-g"></span></div>
+  <div id="gear">N</div>
+  <span class="blink" id="blink-r">▶</span>
+</div>
+
+<div id="scorebox" class="panel">
+  <div class="row"><span>점수 (간이 채점)</span><span id="score">100</span></div>
+  <div id="log"></div>
+</div>
+<div id="toast"></div>
+<div id="keys"><kbd>E</kbd>가속 <kbd>W</kbd>브레이크 <kbd>←→</kbd>핸들 · <kbd>1</kbd>/<kbd>2</kbd>방향지시등 · <kbd>D</kbd><kbd>R</kbd><kbd>N</kbd>기어 · <kbd>C</kbd>시점 · <kbd>T</kbd>체크포인트 · <kbd>V</kbd>음성</div>
+
+<div id="bigmap-wrap" hidden><canvas id="bigmap"></canvas></div>
+
+<div id="start" class="overlay">
+  <div class="card">
+    <h1>온수역자동차전문학원 · 도로주행 연습</h1>
+    <h2>학원 도로주행코스도(2026.07.03판) 기준 · 코스를 선택하세요</h2>
+    <div class="courses" id="courses"></div>
+    <div class="keys-help">
+      <b>조작</b> — <kbd>E</kbd> 가속 · <kbd>W</kbd> 브레이크 · <kbd>←</kbd><kbd>→</kbd> 핸들 · <kbd>1</kbd>/<kbd>2</kbd> 좌/우 방향지시등 ·
+      <kbd>D</kbd> 주행 · <kbd>R</kbd> 후진 · <kbd>N</kbd> 중립 (언제든 바로 변경) · <kbd>C</kbd> 시점 · <kbd>M</kbd> 지도 · <kbd>T</kbd> 체크포인트 · <kbd>V</kbd> 음성<br />
+      <b>채점</b> — 신호위반·중앙선 침범·코스 이탈·차량/보행자 사고·횡단 중인 보행자 무시는 실격 ·
+      속도위반(제한속도 +20km/h 이상: 50구간 70, 30구간 50)·방향지시등 미작동·지정차로(좌/우회전·유턴) 위반·정지 5초 이상 D 기어 유지(N 미전환)·연석 침범 감점 · 유턴은 유턴구역에서 보조판(보행신호시) 조건일 때만, 오류철도고가 3거리 우회전은 반드시 일시정지(위반 시 실격) · 70점 이상 합격
+    </div>
+  </div>
+</div>
+
+<div id="dq" class="overlay" hidden>
+  <div class="card">
+    <h1 style="color:#ff6b5f">실격</h1>
+    <h2 id="dq-reason"></h2>
+    <p style="font-size:14px;opacity:.8">연습 모드이므로 계속 주행할 수 있습니다. 결과는 실격으로 기록됩니다.</p>
+    <div class="btns"><button id="dq-continue">계속 연습</button><button class="ghost" id="dq-restart">처음부터</button><button class="ghost" id="dq-menu">코스 선택</button></div>
+  </div>
+</div>
+
+<div id="result" class="overlay" hidden>
+  <div class="card">
+    <h1 id="result-title"></h1>
+    <h2 id="result-score"></h2>
+    <div id="result-time" style="font-size:14px;opacity:.8"></div>
+    <ul id="result-log"></ul>
+    <div class="btns"><button id="result-restart">다시 주행</button><button class="ghost" id="result-menu">코스 선택</button></div>
+  </div>
+</div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
