@@ -171,7 +171,7 @@ export class Net {
     this.rightStop = new Set(RIGHT_STOP.map(([from, to]) => key(from, to)));
     this.rightSignals = new Set(RIGHT_SIGNALS.map(([from, to]) => key(from, to)));
     this.laneUseMap = new Map(LANE_USE.map(([from, to, use]) => [key(from, to), use]));
-    this.signalHeads = new Map(SIGNAL_HEADS.map(([from, to, far, near]) => [key(from, to), { far, near }]));
+    this.signalHeads = new Map(SIGNAL_HEADS.map(([from, to, far, near, opt]) => [key(from, to), { far, near, ...opt }]));
     // 노면 유도선: 교차로 via를 from → to로 직진하는 차로를 잇는다
     this.guides = GUIDE_LINES.map(([from, via, to, type]) => {
       const n = this.nodes[via], eIn = this.edgeBetween(from, via), eOut = this.edgeBetween(via, to);

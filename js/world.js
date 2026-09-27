@@ -1304,6 +1304,15 @@ const pedTex = (walk) => canvasTex(64, 64, (g) => {
   else { g.fillRect(26, 42, 5, 18); g.fillRect(33, 42, 5, 18); }
 }, false);
 const PED_TEX = { R: pedTex(false), G: pedTex(true) };
+// 비보호 좌회전 지시표지: 파란 원에 흰 좌회전 화살표, 아래 '비보호'
+const unprotectedTex = canvasTex(128, 160, (g) => {
+  g.fillStyle = '#fff'; g.fillRect(0, 0, 128, 160);
+  g.fillStyle = '#1f5fbf'; g.beginPath(); g.arc(64, 60, 54, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = '#fff'; g.lineWidth = 13; g.lineCap = 'butt';
+  g.beginPath(); g.moveTo(80, 98); g.lineTo(80, 64); g.quadraticCurveTo(80, 48, 62, 48); g.lineTo(50, 48); g.stroke();
+  g.fillStyle = '#fff'; g.beginPath(); g.moveTo(26, 48); g.lineTo(52, 28); g.lineTo(52, 68); g.closePath(); g.fill();
+  g.fillStyle = '#1f5fbf'; g.font = `bold 34px ${FONT}`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('비보호', 64, 138);
+}, false);
 
 function lampMat(kind) {
   const mat = new THREE.MeshBasicMaterial({ color: LAMP[kind][1], toneMapped: false });
@@ -1362,7 +1371,7 @@ function buildSignals(ctx) {
         return Array.from({ length: cnt }, (_, k) => o0 + ((o1 - o0) * k) / (cnt - 1));
       };
       // 기둥 + 팔 + 신호등들 (base: 도로 중심선 위 기준점, poleO: 기둥 위치, heads: 신호등 위치 o)
-      const gantry = (bp, poleO, heads, y0) => {
+      const gantry = (bp, poleO, heads, y0, ls = lamps) => {
         const armStart = Math.min(uturnHere ? -0.5 : Infinity, ...heads.map((h) => h - 1.2));
         const pole = { x: bp.x + rv.x * poleO, z: bp.z + rv.z * poleO };
         batch.add(MAT.darkMetal, new THREE.CylinderGeometry(0.16, 0.2, 6.8, 10), mtx(pole.x, y0 + 3.4, pole.z));
@@ -1371,9 +1380,9 @@ function buildSignals(ctx) {
         ctx.reserved.push({ x: pole.x, z: pole.z, r: 3 });
         for (const ho of heads) {
           const head = { x: bp.x + rv.x * ho, z: bp.z + rv.z * ho };
-          batch.box(MAT.darkMetal, lamps.length * 0.5 + 0.16, 0.58, 0.34, mtx(head.x, y0 + 6.1, head.z, yaw));
-          lamps.forEach((l, i) => {
-            const lx = (i - (lamps.length - 1) / 2) * 0.5;
+          batch.box(MAT.darkMetal, ls.length * 0.5 + 0.16, 0.58, 0.34, mtx(head.x, y0 + 6.1, head.z, yaw));
+          ls.forEach((l, i) => {
+            const lx = (i - (ls.length - 1) / 2) * 0.5;
             const m = new THREE.Mesh(new THREE.CircleGeometry(0.2, 18), sets[g][l]);
             m.applyMatrix4(mtx(head.x, y0 + 6.1, head.z, yaw).multiply(mtx(lx, 0, 0.18)));
             ctx.scene.add(m);
@@ -1382,6 +1391,12 @@ function buildSignals(ctx) {
         }
       };
       gantry(base, farHw + 1.2, spread(cfg.far), nh);
+      if (cfg.unprotected) {
+        // 비보호 좌회전 표지 (파란 원 좌회전 화살표 + '비보호' 글자): 건너편 신호등 오른쪽 팔에 매단다
+        const so = spread(cfg.far).at(-1) + lamps.length * 0.25 + 0.75, sp = { x: base.x + rv.x * so, z: base.z + rv.z * so };
+        ctx.scene.add(signMesh(unprotectedTex, 1.0, 1.25, mtx(sp.x, nh + 5.95, sp.z, yaw).multiply(mtx(0, 0, 0.05))));
+        batch.box(MAT.darkMetal, 0.9, 1.15, 0.05, mtx(sp.x, nh + 5.95, sp.z, yaw));
+      }
       if (net.hasRightSignal(e, n) && end.cw) {
         // 우회전 전용 신호등 (영상 C코스 11:41): 진입로 오른쪽 모퉁이, 횡단보도 바로 너머 기둥에 3색등 1개
         const sr = e.sFromEnd(dirIn, end.cw[0] - 1), y0 = e.h(sr), hs = e.hwS(dirIn);
@@ -1400,7 +1415,7 @@ function buildSignals(ctx) {
       }
       if (cfg.near && end.stop) {
         const sn = e.sFromEnd(dirIn, end.stop + 2), bn = e.pt(sn, 0);
-        gantry(bn, e.hwS(dirIn) + 1.2, spread(cfg.near), e.h(sn));
+        gantry(bn, e.hwS(dirIn) + 1.2, spread(cfg.near), e.h(sn), cfg.nearLamps || lamps);
       }
       if (uturnHere) {
         const us = { x: base.x + rv.x * 0.3, z: base.z + rv.z * 0.3 };
