@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { signalGroup, classifyTurn } from './net.js';
-import { signalState, movementAllowed } from './signals.js';
+import { signalState, movementAllowed, rightArrowState } from './signals.js';
 import { roadT } from './terrain.js';
 
 const COUNT = 42;
@@ -77,7 +77,7 @@ export class Traffic {
       let r = Math.random() * this.totalL, e = this.spawnEdges[0];
       for (const x of this.spawnEdges) { if ((r -= x.L) <= 0) { e = x; break; } }
       const dir = e.oneway ? 1 : Math.random() < 0.5 ? 1 : -1;
-      const lane = 1 + Math.floor(Math.random() * (e.bus || e.merge ? e.lanes - 1 : e.lanes));
+      const lane = 1 + Math.floor(Math.random() * (e.bus || e.merge ? e.nl(dir) - 1 : e.nl(dir)));
       const s = e.ta + 15 + Math.random() * (e.L - e.ta - e.tb - 55);
       const p = e.pt(s, e.laneO(dir, lane));
       const d = Math.hypot(p.x - player.x, p.z - player.z);
@@ -110,8 +110,14 @@ export class Traffic {
       next = opts.find((x) => (r -= x.w) <= 0) || opts[0];
     }
     const mv = next ? next.mv : 'straight';
-    let use = mv === 'right' ? e.lanes : mv === 'left' ? 1 : Math.min(lane, e.lanes);
-    if ((e.bus || e.merge) && use === e.lanes && mv !== 'right' && !(e.merge && lane === e.lanes)) use = e.lanes - 1;
+    const nl = e.nl(dir);
+    lane = Math.min(lane, nl);
+    let use = mv === 'right' ? nl : mv === 'left' ? 1 : lane;
+    if ((e.bus || e.merge) && use === nl && mv !== 'right' && !(e.merge && lane === nl)) use = nl - 1;
+    // 노면 화살표로 진행방향이 지정된 차로는 따른다
+    if (next && net.laneUse(e, node) && !net.laneAllows(e, node, use, mv)) {
+      for (let l = 1; l <= nl; l++) if (net.laneAllows(e, node, l, mv)) { use = l; if (mv !== 'right') break; }
+    }
     const end = e.endFor(dir);
     const sEnd = e.sFromEnd(dir, end.mark);
     const pk = mv === 'left' ? e.pocket(dir) : null;
@@ -128,15 +134,21 @@ export class Traffic {
     let nx = null;
     if (next) {
       const e2 = next.o, dir2 = e2.a === node ? 1 : -1;
-      let lane2 = mv === 'right' ? e2.lanes : mv === 'left' ? 1 : Math.min(use, e2.lanes);
-      if ((e2.bus || (e2.merge && mv === 'straight')) && lane2 === e2.lanes) lane2 = e2.lanes - 1;
+      let lane2 = mv === 'right' ? e2.nl(dir2) : mv === 'left' ? 1 : Math.min(use, e2.nl(dir2));
       const s2 = e2.sFromEnd(-dir2, e2.endFor(-dir2).mark);
+      if (mv === 'straight' && !net.hasGuide(node, e, e2)) {
+        // 직진은 실제 위치가 가장 가까운 차로로 (노면 유도선이 있는 교차로는 유도선대로 같은 번호 차로) (왼쪽에 차로가 생기는 곳에서 번호가 밀린다)
+        const a = pts.at(-1);
+        let bd = Infinity;
+        for (let l = 1; l <= e2.nl(dir2); l++) { const q = e2.pt(s2, e2.laneO(dir2, l)), dd = Math.hypot(q.x - a.x, q.z - a.z); if (dd < bd) { bd = dd; lane2 = l; } }
+      }
+      if ((e2.bus || (e2.merge && mv === 'straight')) && lane2 === e2.nl(dir2)) lane2 = e2.nl(dir2) - 1;
       const P2 = e2.pt(s2, e2.laneO(dir2, lane2)), d2 = { x: e2.u.x * dir2, z: e2.u.z * dir2 };
       const a = pts.at(-1), dist = Math.hypot(P2.x - a.x, P2.z - a.z);
       const turn = Math.acos(Math.max(-1, Math.min(1, h1.x * d2.x + h1.z * d2.z)));
-      const kk = Math.max(3, dist * (turn > 1.9 ? 0.8 : 0.5));
+      const kk = Math.max(Math.min(3, dist), dist * (turn > 1.9 ? 0.8 : 0.5));
       for (const p of bezier(a, { x: a.x + h1.x * kk, z: a.z + h1.z * kk }, { x: P2.x - d2.x * kk, z: P2.z - d2.z * kk }, P2, 10)) pts.push(p);
-      nx = { e: e2, dir: dir2, lane: lane2, s: s2, exit: e2.pt(s2 + dir2 * 7, e2.laneO(dir2, lane2)) };
+      nx = { e: e2, dir: dir2, lane: lane2, s: s2, d: d2, exit: e2.pt(s2 + dir2 * 7, e2.laneO(dir2, lane2)) };
     }
     let d = 0;
     pts.forEach((p, i) => { if (i) d += Math.hypot(p.x - pts[i - 1].x, p.z - pts[i - 1].z); p.d = d; });
@@ -187,18 +199,23 @@ export class Traffic {
           look(o, 45, 1.9, 4.8);
         }
       }
-      look(player3, 45, 2.6, 4.8); // 끼어드는 플레이어 차량은 조금 더 넓게 본다
+      // 끼어드는 플레이어 차량은 조금 더 넓게 본다 (교차로 안에서 방향이 다르면 제외 — 교착 방지)
+      if (!(inBox && Math.cos(player.yaw - c.yaw) < 0.7)) look(player3, 45, 2.6, 4.8);
       for (const p of peds) look(p, 26, 2.6, 3);
       // 신호
       if (P.stopD !== null && !c.committed) {
         if (c.pd > P.stopD) c.committed = true;
         else {
-          const st = signalState(P.node, P.group, t);
+          // 우회전 전용 신호등이 있으면 녹색 화살표에만 우회전
+          const rs = P.mv === 'right' && net.hasRightSignal(P.e, P.node) ? rightArrowState(P.node, P.group, t) : null;
+          const st = rs || signalState(P.node, P.group, t);
           const toStop = P.stopD - c.pd;
-          let go = movementAllowed(st, P.mv);
+          let go = rs ? rs === 'G' : movementAllowed(st, P.mv);
           if (st === 'Y') go = toStop < (c.v * c.v) / (2 * 3.5); // 멈출 수 없으면 통과
           // 꼬리물기 금지: 교차로 건너편 출구가 막혀 있으면 진입하지 않는다
-          if (go && P.next && toStop < 25 && others.some((o) => o !== c && o.v < 2 && Math.hypot(o.x - P.next.exit.x, o.z - P.next.exit.z) < 6)) go = false;
+          // (진출로 쪽으로 가는 차만 본다 — 바로 옆 반대 차로에서 신호 대기 중인 차 때문에 교착되지 않게)
+          if (go && P.next && toStop < 25 && others.some((o) => o !== c && o.v < 2 && Math.hypot(o.x - P.next.exit.x, o.z - P.next.exit.z) < 6
+            && Math.sin(o.yaw) * P.next.d.x + Math.cos(o.yaw) * P.next.d.z > 0.5)) go = false;
           if (!go) gap = Math.min(gap, toStop - 0.8);
           else if (st === 'Y' || toStop < 3) c.committed = true;
         }

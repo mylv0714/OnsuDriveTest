@@ -29,6 +29,17 @@ export function signalTiming(node, group, t) {
   return { state: st, remaining: rem, cycle: Math.floor(tt / T) };
 }
 
+// 우회전 전용 신호 (화살표): 같은 방향 직진 녹색 동안 녹색, 그 뒤 황색 동안 황색, 나머지는 적색
+export function rightArrowState(node, group, t) {
+  const st = signalState(node, group, t);
+  if (st === 'G' || st === 'GL') return 'G';
+  if (st !== 'Y') return 'R';
+  let k = 0.5;
+  while (k < 6 && signalState(node, group, t - k) === 'Y') k += 0.5;
+  const before = signalState(node, group, t - k);
+  return before === 'G' || before === 'GL' ? 'Y' : 'R';
+}
+
 // 정지선을 넘을 때 신호에 따라 해당 진행이 허용되는지 (우회전·유턴은 신호와 무관, 황색은 진입 허용)
 export function movementAllowed(state, mv) {
   if (mv === 'right' || mv === 'U' || state === 'Y') return true;

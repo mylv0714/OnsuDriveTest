@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>온수 도로주행 연습</title>
+<title>온수자동차전문학원 도로주행 코스암기</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%273%27 fill=%27%23f2c14e%27/%3E%3C/svg%3E">
 <style>
   :root { --panel: rgba(18, 22, 28, 0.78); --line: rgba(255, 255, 255, 0.12); --accent: #ffd60a; }
   * { box-sizing: border-box; }
@@ -85,9 +86,28 @@
   #sig span[hidden] { display: none; }
   #sig-r.on { background: #ff2d1a; box-shadow: 0 0 8px #ff2d1a; }
   #sig-y.on { background: #ffb300; box-shadow: 0 0 8px #ffb300; }
-  #sig-a.on, #sig-g.on { background: #14e38a; box-shadow: 0 0 8px #14e38a; }
+  #sig-a.on, #sig-g.on, #sig-ra.g { background: #14e38a; box-shadow: 0 0 8px #14e38a; }
+  #sig-ra { margin-left: 6px; }
+  #sig-ra.r { background: #ff2d1a; box-shadow: 0 0 8px #ff2d1a; }
+  #sig-ra.y { background: #ffb300; box-shadow: 0 0 8px #ffb300; }
   #course-name { font-size: 12px; opacity: 0.7; margin-bottom: 2px; }
 </style>
+<script>
+  // 로딩 오류 표시: 모듈을 불러오지 못하면 첫 화면에서 버튼이 동작하지 않으므로 원인을 화면에 띄운다
+  (function () {
+    function show(msg) {
+      if (window.__loadErr) return;
+      window.__loadErr = true;
+      var d = document.createElement('div');
+      d.style.cssText = 'position:fixed;left:50%;top:12px;transform:translateX(-50%);z-index:9999;max-width:90vw;background:#b3261e;color:#fff;padding:10px 14px;border-radius:8px;font:14px sans-serif;line-height:1.5';
+      d.textContent = '로딩 오류: ' + msg + ' — Ctrl+F5(강력 새로고침)을 누르거나, python serve.py로 서버를 실행하세요.';
+      (document.body || document.documentElement).appendChild(d);
+    }
+    addEventListener('error', function (e) { if (!window.__ready) show(e.message || (e.target && e.target.src) || '스크립트 오류'); }, true);
+    addEventListener('unhandledrejection', function (e) { if (!window.__ready) show(String(e.reason)); });
+    addEventListener('load', function () { setTimeout(function () { if (!window.__ready) show('게임 모듈을 불러오지 못했습니다 (인터넷 연결 또는 캐시 확인)'); }, 15000); });
+  })();
+</script>
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
@@ -105,14 +125,14 @@
   <div id="instr-next"></div>
   <div id="progress-wrap"><div id="progress"></div></div>
 </div>
-<div id="mirror-frame"></div>
+<div id="mirror-frame" hidden></div>
 <div id="mapbox" class="panel"><canvas id="minimap" width="230" height="230"></canvas><small>위 = 남 (학원 안내도와 같은 방향) · <kbd>M</kbd> 전체</small></div>
 
 <div id="dash" class="panel">
   <span class="blink" id="blink-l">◀</span>
   <div><div id="speed">0</div><div class="unit" style="text-align:right">km/h</div></div>
   <div class="limit" id="limit">50</div>
-  <div id="sig" hidden title="전방 신호"><span id="sig-r"></span><span id="sig-y"></span><span id="sig-a">←</span><span id="sig-g"></span></div>
+  <div id="sig" hidden title="전방 신호"><span id="sig-r"></span><span id="sig-y"></span><span id="sig-a">←</span><span id="sig-g"></span><span id="sig-ra" hidden title="우회전 신호">우</span></div>
   <div id="gear">N</div>
   <span class="blink" id="blink-r">▶</span>
 </div>
@@ -122,13 +142,13 @@
   <div id="log"></div>
 </div>
 <div id="toast"></div>
-<div id="keys"><kbd>E</kbd>가속 <kbd>W</kbd>브레이크 <kbd>←→</kbd>핸들 · <kbd>1</kbd>/<kbd>2</kbd>방향지시등 · <kbd>D</kbd><kbd>R</kbd><kbd>N</kbd>기어 · <kbd>C</kbd>시점 · <kbd>T</kbd>체크포인트 · <kbd>V</kbd>음성</div>
+<div id="keys"><kbd>E</kbd>가속 <kbd>W</kbd>브레이크 <kbd>←→</kbd>핸들 · <kbd>1</kbd>/<kbd>2</kbd>방향지시등 · <kbd>D</kbd><kbd>R</kbd><kbd>N</kbd>기어 · <kbd>C</kbd>시점 · <kbd>T</kbd>체크포인트 · <kbd>V</kbd>음성 · <kbd>X</kbd>엔진음</div>
 
 <div id="bigmap-wrap" hidden><canvas id="bigmap"></canvas></div>
 
 <div id="start" class="overlay">
   <div class="card">
-    <h1>온수역자동차전문학원 · 도로주행 연습</h1>
+    <h1>온수자동차전문학원 도로주행 코스암기</h1>
     <h2>학원 도로주행코스도(2026.07.03판) 기준 · 코스를 선택하세요</h2>
     <div class="courses" id="courses"></div>
     <div class="keys-help">

@@ -4,6 +4,11 @@ import { roadT } from './terrain.js';
 
 const WHEELBASE = 2.7;
 const HIT_R = 0.95; // 충돌 원 반지름 (차체 앞/가운데/뒤 3개)
+// 자동변속기 5단: 올림 변속 속도(km/h), 단수별 가속력(m/s²), 회전수 비율(rpm per km/h)
+const SHIFT_UP = [16, 30, 46, 62];
+const GEAR_ACC = [3.6, 3.0, 2.4, 1.8, 1.4];
+const RPM_PER_KMH = [105, 62, 43, 33, 27];
+const IDLE_RPM = 750;
 
 function roofSignTex() {
   const c = document.createElement('canvas');
@@ -70,10 +75,11 @@ export class Car {
     this.blinker = 0; // -1 좌, +1 우
     this.blinkYaw0 = 0; this.blinkTurned = false;
     this.hit = false;
+    this.autoGear = 1; this.shiftT = 0; this.rpm = IDLE_RPM; this.accel = 0; this.pitchDyn = 0;
   }
 
   place(x, z, yaw, y = 0) {
-    Object.assign(this, { x, z, yaw, y, v: 0, steer: 0, gear: 'N', blinker: 0 });
+    Object.assign(this, { x, z, yaw, y, v: 0, steer: 0, gear: 'N', blinker: 0, autoGear: 1, shiftT: 0, rpm: IDLE_RPM, accel: 0, pitchDyn: 0 });
     this.ground = y;
     this.syncMesh(0);
   }
@@ -107,11 +113,26 @@ export class Car {
 
     const sgn = this.gear === 'R' ? -1 : 1;
     let a = 0;
+    // 자동변속기: 속도에 따라 단수를 바꾸고, 바꾸는 순간(0.35초)은 구동력이 잠깐 빠진다
+    const kmhNow = Math.abs(this.v) * 3.6;
+    const g0 = this.autoGear;
+    if (this.gear !== 'D') this.autoGear = 1;
+    else if (this.autoGear < 5 && kmhNow > SHIFT_UP[this.autoGear - 1] + input.throttle * 8) this.autoGear++;
+    else if (this.autoGear > 1 && kmhNow < SHIFT_UP[this.autoGear - 2] - 5) this.autoGear--;
+    if (this.autoGear !== g0) this.shiftT = 0.35;
+    this.shiftT = Math.max(0, this.shiftT - dt);
     if (this.gear !== 'N') {
       const along = sgn * this.v; // 기어 방향 속도
-      if (input.throttle > 0) a += sgn * 3.2 * input.throttle * Math.max(0, 1 - Math.max(0, along) / (this.gear === 'R' ? 5 : 33));
+      const gi = this.gear === 'R' ? 0 : this.autoGear - 1;
+      if (input.throttle > 0) a += sgn * GEAR_ACC[gi] * input.throttle * (this.shiftT > 0 ? 0.35 : 1) * Math.max(0, 1 - Math.max(0, along) / (this.gear === 'R' ? 5 : 43));
       else if (!input.brake && along < 1.8) a += sgn * 0.8; // 자동변속기 크리핑
+      else if (along > 2.5) a -= sgn * (0.25 + 0.05 * (6 - this.autoGear)); // 엔진 브레이크 (낮은 단일수록 강하게)
     }
+    // 엔진 회전수 (소리용): N에서는 가속 페달만큼 공회전이 오른다
+    const rpmT = this.gear === 'N' || Math.abs(this.v) < 0.3
+      ? IDLE_RPM + input.throttle * 2600
+      : Math.max(IDLE_RPM, kmhNow * RPM_PER_KMH[this.gear === 'R' ? 0 : this.autoGear - 1] + input.throttle * 700);
+    this.rpm += (Math.min(6200, rpmT) - this.rpm) * Math.min(1, dt * (this.shiftT > 0 ? 14 : 6));
     // 경사: 오르막은 느려지고 내리막은 빨라진다 (N이나 브레이크를 떼면 굴러감)
     const f0 = this.fwd;
     const slope = (this.surf(net, this.x + f0.x * 1.35, this.z + f0.z * 1.35) - this.surf(net, this.x - f0.x * 1.35, this.z - f0.z * 1.35)) / 2.7;
@@ -122,6 +143,7 @@ export class Car {
       const b = 7.5 * input.brake;
       if (Math.abs(this.v) <= b * dt) { this.v = 0; a = 0; } else a -= Math.sign(this.v) * b;
     }
+    this.accel += (a - this.accel) * Math.min(1, dt * 5);
     this.v += a * dt;
 
     const yaw = this.yaw - ((this.v * Math.tan(this.steer)) / WHEELBASE) * dt;
@@ -130,10 +152,11 @@ export class Car {
     const h = net.height(nx, nz, this.ground);
     this.hit = false;
     this.hitCar = false;
-    const carHit = this.collides(nx, nz, f, others, 0.9);
+    // 이미 겹쳐 있는 차(다른 차가 밀고 들어온 경우)에서는 빠져나올 수 있게, 새로 부딪힐 때만 막는다
+    const carHit = this.collides(nx, nz, f, others, 0.9) && !this.collides(this.x, this.z, this.fwd, others, 0.9);
     if (Math.abs(h - this.ground) > 0.9 || carHit || this.collides(nx, nz, f, colliders)) {
       this.hit = Math.abs(this.v) > 0.5;
-      this.hitCar = carHit;
+      this.hitCar = carHit && Math.abs(this.v) > 0.3; // 멈춰 있는데 다른 차가 와서 닿은 것은 사고로 보지 않는다
       this.v = 0;
     } else {
       this.x = nx; this.z = nz; this.yaw = yaw; this.ground = h;
@@ -172,7 +195,9 @@ export class Car {
       pitch = (this.surf(net, this.x - f.x * 1.35, this.z - f.z * 1.35) - this.surf(net, this.x + f.x * 1.35, this.z + f.z * 1.35)) / 2.7;
       roll = (this.surf(net, this.x + l.x * 0.8, this.z + l.z * 0.8) - this.surf(net, this.x - l.x * 0.8, this.z - l.z * 0.8)) / 1.6;
     }
-    this.mesh.rotation.set(pitch, this.yaw, roll, 'YXZ');
+    // 가속하면 뒤로 앉고 제동하면 앞으로 숙는다
+    this.pitchDyn += (Math.max(-0.035, Math.min(0.035, (this.accel * Math.sign(this.v || 1)) * -0.006)) - this.pitchDyn) * Math.min(1, (dt || 0) * 6);
+    this.mesh.rotation.set(pitch + this.pitchDyn, this.yaw, roll, 'YXZ');
     for (let i = 0; i < 2; i++) this.wheelMeshes[i].rotation.y = -this.steer;
     this.steerWheel.rotation.z = this.steer * 6;
     this.brakeMat.emissiveIntensity = input.brake > 0 ? 1.6 : 0.25;
@@ -191,7 +216,8 @@ export class Car {
       const f = this.fwd;
       const y = this.mesh.position.y;
       const want = new THREE.Vector3(this.x - f.x * 8, y + 3.4, this.z - f.z * 8);
-      cam.position.lerp(want, 0.15);
+      if (cam.position.distanceTo(want) > 30) cam.position.copy(want); // 출발·순간이동 직후엔 바로 제자리로
+      else cam.position.lerp(want, 0.15);
       cam.lookAt(this.x + f.x * 4, y + 1.2, this.z + f.z * 4);
     }
   }

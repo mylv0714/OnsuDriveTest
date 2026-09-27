@@ -1,10 +1,10 @@
 // 3D 월드 생성: 도로/차선/신호등/건물/철도/고가차도/가로수 등
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { toWorld, RAIL, STATIONS, OVERPASS, FOOTBRIDGE, SPEED_SIGNS, LANDMARKS, GUIDE_SIGNS, S } from './map.js';
+import { toWorld, RAIL, STATIONS, OVERPASS, FOOTBRIDGE, SPEED_SIGNS, LANDMARKS, GUIDE_SIGNS, IC_GREEN, S } from './map.js';
 import { CW_W, signalGroup, hasLeftTurn } from './net.js';
 import { COURSES } from './course.js';
-import { makeTerrain } from './terrain.js';
+import { makeTerrain, bump } from './terrain.js';
 
 // 지형: buildWorld에서 설정. 모든 정적 지오메트리는 만들어진 뒤 지형 높이만큼 올린다
 let TER = null;
@@ -156,6 +156,7 @@ const MAT = {
   darkConcrete: std(0x8d8b86),
   curb: std(0xc9c6bf),
   metal: std(0x5d6166, { metalness: 0.5, roughness: 0.5 }),
+  steelBlue: std(0x3f73b5, { metalness: 0.35, roughness: 0.45 }), // 오류고가차도 철골 거더 (영상 B코스 4:50)
   darkMetal: std(0x2d3033, { metalness: 0.4, roughness: 0.6 }),
   fencePost: std(0xffffff, { map: TEX.fencePost }),
   rail: std(0x8a8f96, { metalness: 0.8, roughness: 0.35 }),
@@ -214,7 +215,8 @@ function displace(g, mode = 'auto') {
   const b = g.boundingBox;
   const ext = Math.max(b.max.x - b.min.x, b.max.z - b.min.z);
   if (mode === 'road' || (mode === 'auto' && ext > 25)) {
-    tessellate(g, 20); // 긴 면은 20m 간격으로 잘라 기복을 따라가게 (곡률 오차 1cm 미만)
+    // 긴 면은 길이·폭 모두 8m 이하로 잘라 기복을 따라가게 (언덕 곡면에서 넓은 포장면이 차선 위로 뜨지 않게)
+    for (let k = 0; k < 3; k++) tessellate(g, 8);
     const pos = g.attributes.position;
     for (let i = 0; i < pos.count; i++) pos.setY(i, pos.getY(i) + TER.roadT(pos.getX(i), pos.getZ(i)));
     pos.needsUpdate = true;
@@ -333,12 +335,15 @@ function lineMark(buf, e, s0, s1, o, w, dash) {
   for (let s = s0; s < s1; s += dash[0] + dash[1]) edgeQuad(buf, e, s, Math.min(s + dash[0], s1), o - w / 2, o + w / 2, 0.035);
 }
 // 점선이되 solid 구간([a,b])에서는 실선 (교차로 앞 진로변경제한선)
+// 큰길(경인로·남부순환로)은 점선이 길다 (영상 C코스 9:12)
+const dashOf = (e) => (e.type === 'arterial' ? [6, 6] : [3, 5]);
 function dividedLine(buf, e, s0, s1, o, w, solid) {
-  if (!solid) return lineMark(buf, e, s0, s1, o, w, [3, 5]);
+  const dash = dashOf(e);
+  if (!solid) return lineMark(buf, e, s0, s1, o, w, dash);
   const [a, b] = solid;
-  lineMark(buf, e, s0, Math.min(s1, a), o, w, [3, 5]);
+  lineMark(buf, e, s0, Math.min(s1, a), o, w, dash);
   lineMark(buf, e, Math.max(s0, a), Math.min(s1, b), o, w, null);
-  lineMark(buf, e, Math.max(s0, b), s1, o, w, [3, 5]);
+  lineMark(buf, e, Math.max(s0, b), s1, o, w, dash);
 }
 
 const ARROWS = {
@@ -426,6 +431,20 @@ function polyDist(px, pz, pts) {
   for (let i = 1; i < pts.length; i++) m = Math.min(m, segDist(px, pz, pts[i - 1], pts[i]));
   return m;
 }
+// 철길이 땅을 파고 지나는 깊이: 가장 가까운 철길 지점의 깊이와 거리 {d, dist}
+function railCut(px, pz, pts) {
+  let best = { dist: Infinity, d: 0 };
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i], dx = b.x - a.x, dz = b.z - a.z, L2 = dx * dx + dz * dz || 1;
+    const t = clamp(((px - a.x) * dx + (pz - a.z) * dz) / L2, 0, 1);
+    const dist = Math.hypot(px - a.x - dx * t, pz - a.z - dz * t);
+    if (dist < best.dist) best = { dist, d: a.d + (b.d - a.d) * t, x: a.x + dx * t, z: a.z + dz * t };
+  }
+  // 언덕(bump) 위에서는 그만큼 더 파서 철길은 수평 유지
+  if (best.d > 0) best.d += bump(best.x, best.z);
+  return best;
+}
+const TRENCH_HW = 9.3; // 파인 곳 반폭 (옹벽까지)
 function obbPoints(ob, n = 3) {
   const pts = [];
   for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
@@ -439,12 +458,15 @@ function obbPoints(ob, n = 3) {
 export function buildWorld(scene, net) {
   const ctx = {
     scene, net, batch: new Batcher(),
-    colliders: [], obbs: [], reserved: [],
-    rail: RAIL.map(([x, y]) => toWorld(x, y)),
+    colliders: [], obbs: [],
+    rail: RAIL.map(([x, y, d]) => ({ ...toWorld(x, y), d: d || 0 })),
+    // 오류IC 루프 안쪽은 건물을 두지 않는다
+    reserved: IC_GREEN.map((g) => ({ x: g.x, z: g.z, r: g.r })),
     ov: { x: toWorld(OVERPASS.x, 0).x, z0: toWorld(0, OVERPASS.y0).z, z1: toWorld(0, OVERPASS.y1).z },
   };
   ctx.fits = (ob) => {
-    const n = Math.max(ob.hu, ob.hr) > 20 ? 5 : 3;
+    // 표본점 간격 10m 이하: 폭 좁은 연결로가 큰 건물 표본점 사이로 빠지지 않게
+    const n = Math.max(3, Math.ceil((2 * Math.max(ob.hu, ob.hr)) / 10) + 1);
     for (const p of obbPoints(ob, n)) {
       if (net.roadClearance(p.x, p.z) < 5.2) return false;
       if (polyDist(p.x, p.z, ctx.rail) < 11) return false;
@@ -508,11 +530,48 @@ function buildGround(ctx) {
     uv.setXY(i, uv.getX(i) * size / 8, uv.getY(i) * size / 8);
     pos.setY(i, T.roadT(pos.getX(i), pos.getZ(i)) - 0.02);
   }
+  // 철길이 땅을 파고 지나는 곳(역곡고가교 밑): 그 근처 격자는 비우고 촘촘한 격자로 파인 바닥을 만든다
+  const cutAt = (x, z) => { const c = railCut(x, z, ctx.rail); return c.d > 0.05 && c.dist < TRENCH_HW ? c.d : 0; };
+  // 언덕(BUMPS) 곡면도 50m 격자로는 도로보다 위로 뜨므로 촘촘한 격자로 다시 깐다
+  const near = (x, z) => { const c = railCut(x, z, ctx.rail); return (c.d > 0.05 && c.dist < TRENCH_HW + 40) || bump(x, z) > 0 || bump(x + 40, z) > 0 || bump(x - 40, z) > 0 || bump(x, z + 40) > 0 || bump(x, z - 40) > 0; };
+  const index = g.index.array, keep = [], holes = [];
+  for (let i = 0; i < index.length; i += 3) {
+    const tri = [index[i], index[i + 1], index[i + 2]];
+    const cx = tri.reduce((s, k) => s + pos.getX(k), 0) / 3, cz = tri.reduce((s, k) => s + pos.getZ(k), 0) / 3;
+    if (near(cx, cz)) holes.push(tri.map((k) => [pos.getX(k), pos.getZ(k)])); else keep.push(...tri);
+  }
+  g.setIndex(keep);
   g.computeVertexNormals();
   const m = new THREE.Mesh(g, MAT.ground);
   m.receiveShadow = true;
   m.userData.fixed = true;
   ctx.scene.add(m);
+  if (holes.length) {
+    const inTri = (x, z, t) => {
+      const [[x1, z1], [x2, z2], [x3, z3]] = t;
+      const d1 = (x - x2) * (z1 - z2) - (x1 - x2) * (z - z2), d2 = (x - x3) * (z2 - z3) - (x2 - x3) * (z - z3), d3 = (x - x1) * (z3 - z1) - (x3 - x1) * (z - z1);
+      return !((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0));
+    };
+    const patch = new Buf(), st = 2.5;
+    const Y = (x, z) => T.roadT(x, z) - cutAt(x, z) - 0.02;
+    for (const t of holes) {
+      const xs = t.map((p) => p[0]), zs = t.map((p) => p[1]);
+      for (let x = Math.min(...xs); x < Math.max(...xs) - 1e-6; x += st) {
+        for (let z = Math.min(...zs); z < Math.max(...zs) - 1e-6; z += st) {
+          if (!inTri(x + st / 2, z + st / 2, t)) continue;
+          const P = (a, b) => [a, Y(a, b), b];
+          patch.quad(P(x, z), P(x + st, z), P(x + st, z + st), P(x, z + st), [x / 8, z / 8], [(x + st) / 8, z / 8], [(x + st) / 8, (z + st) / 8], [x / 8, (z + st) / 8]);
+        }
+      }
+    }
+    const pg = new THREE.BufferGeometry();
+    pg.setAttribute('position', new THREE.Float32BufferAttribute(patch.p, 3));
+    pg.setAttribute('uv', new THREE.Float32BufferAttribute(patch.uv, 2));
+    pg.computeVertexNormals();
+    const pm = new THREE.Mesh(pg, MAT.ground);
+    pm.receiveShadow = true; pm.userData.fixed = true;
+    ctx.scene.add(pm);
+  }
 
   // 언덕: 도로에서 떨어진 곳만 솟은 풀밭/산비탈 (5m 격자)
   for (const H of T.hills) {
@@ -618,33 +677,45 @@ function buildRoads(ctx) {
 
   for (const e of net.edges) {
     const s0 = e.ends.a.mark, s1 = e.L - e.ends.b.mark;
-    edgeQuad(asphalt, e, e.ta, e.L - e.tb, -e.hw, e.hw, 0.02);
+    edgeQuad(asphalt, e, e.ta, e.L - e.tb, -e.hwS(-1), e.hwS(1), 0.02);
     // 보도
     const sw = e.profile ? 1.5 : 4.5;
     for (const sg of [-1, 1]) {
-      edgeQuad(side, e, e.ta, e.L - e.tb, sg * (e.hw + 0.25), sg * (e.hw + sw), 0.03, 3);
+      edgeQuad(side, e, e.ta, e.L - e.tb, sg * (e.hwS(sg) + 0.25), sg * (e.hwS(sg) + sw), 0.03, 3);
       if (!e.profile) {
         const c0 = Math.max(e.ta, e.curbA || 0), c1 = e.L - Math.max(e.tb, e.curbB || 0);
-        const len = c1 - c0, m = e.pt(c0 + len / 2, sg * (e.hw + 0.15));
+        const len = c1 - c0, m = e.pt(c0 + len / 2, sg * (e.hwS(sg) + 0.15));
         if (len > 1) ctx.batch.box(MAT.curb, len, 0.14, 0.22, mtx(m.x, 0.07, m.z, yawX(e.u)));
       }
     }
 
     if (e.oneway) {
       for (const sg of [-1, 1]) lineMark(white, e, s0, s1, sg * (e.hw - 0.25), 0.15, null);
+      // 신호등 없는 횡단보도 (연결로): 줄무늬는 양쪽 구간이 반씩, 정지선·예고 표시는 다가오는 쪽만
+      for (const dir of [1, -1]) {
+        const end = e.endFor(dir);
+        if (!end.cw) continue;
+        const ca = e.sFromEnd(dir, end.cw[0]), cb = e.sFromEnd(dir, end.cw[1]);
+        for (let o = -e.hw + 0.4; o < e.hw - 0.4; o += 1.0) edgeQuad(white, e, Math.min(ca, cb), Math.max(ca, cb), o, o + 0.5, 0.035);
+        if (dir < 0) continue;
+        const stopS = e.sFromEnd(1, end.stop);
+        edgeQuad(white, e, stopS - 0.25, stopS + 0.25, -e.hw + 0.25, e.hw - 0.25, 0.036);
+        if (e.L - e.ta - e.tb > 45) diamondMark(white, e, e.sFromEnd(1, end.stop + 30), 0, 1);
+      }
       continue;
     }
     for (const dir of [1, -1]) {
       const end = e.endFor(dir);
       const pk = e.pocket(dir);
-      const uturnHere = e.uturn === (dir > 0 ? 'b' : 'a');
+      const uturnHere = e.uturnAt(dir > 0 ? 'b' : 'a');
       const solid = end.stop ? (dir > 0 ? [e.L - end.stop - 30, s1] : [s0, end.stop + 30]) : null;
-      for (let i = 1; i < e.lanes; i++) {
+      const nl = e.nl(dir);
+      for (let i = 1; i < nl; i++) {
         // 버스전용차로(바깥 차로) 경계는 파란 점선 (영상: 시간제 버스전용차로)
-        const bus = e.bus && i === e.lanes - 1;
+        const bus = e.bus && i === nl - 1;
         dividedLine(bus ? blue : white, e, s0, s1, dir * (e.median / 2 + i * e.laneW), bus ? 0.2 : 0.15, bus ? null : solid);
       }
-      lineMark(white, e, s0, s1, dir * (e.hw - 0.25), 0.15, null);
+      lineMark(white, e, s0, s1, dir * (e.hwS(dir) - 0.25), 0.15, null);
       if (pk) {
         dividedLine(white, e, Math.max(pk[0], s0), Math.min(pk[1], s1), dir * (e.median / 2), 0.15, solid);
         const as = e.sFromEnd(dir, end.stop + 9);
@@ -653,22 +724,27 @@ function buildRoads(ctx) {
       }
       if (end.stop && e.L - e.ta - e.tb > 80) {
         // 횡단보도 예고 표시(◇) — 정지선 30m 앞 각 차로
-        for (let i = 1; i <= e.lanes; i++) diamondMark(white, e, e.sFromEnd(dir, end.stop + 30), e.laneO(dir, i), dir);
+        for (let i = 1; i <= nl; i++) diamondMark(white, e, e.sFromEnd(dir, end.stop + 30), e.laneO(dir, i), dir);
       }
       if (end.stop) {
         const stopS = e.sFromEnd(dir, end.stop);
         const inner = pk ? -dir * e.median / 2 : dir * (e.median >= 1 ? e.median / 2 : 0.3);
-        edgeQuad(white, e, stopS - 0.25, stopS + 0.25, Math.min(inner, dir * e.hw), Math.max(inner, dir * e.hw), 0.036);
+        edgeQuad(white, e, stopS - 0.25, stopS + 0.25, Math.min(inner, dir * e.hwS(dir)), Math.max(inner, dir * e.hwS(dir)), 0.036);
         const ca = e.sFromEnd(dir, end.cw[0]), cb = e.sFromEnd(dir, end.cw[1]);
-        for (let o = -e.hw + 0.4; o < e.hw - 0.4; o += 1.0) edgeQuad(white, e, Math.min(ca, cb), Math.max(ca, cb), o, o + 0.5, 0.035);
-        // 차로 화살표
-        const node = dir > 0 ? e.b : e.a;
-        if (node.kind === 'signal' && e.lanes >= 2) {
-          const tv = { x: e.u.x * dir, z: e.u.z * dir };
-          const straight = node.edges.some((o) => o !== e && dot(net.away(o, node), tv) > 0.9);
-          for (let i = 1; i <= e.lanes; i++) {
-            const type = straight ? 'straight' : i === 1 ? 'left' : i === e.lanes ? 'right' : 'straight';
-            arrowMark(white, e, e.sFromEnd(dir, end.stop + 12), e.laneO(dir, i), dir, type);
+        for (let o = -e.hwS(-1) + 0.4; o < e.hwS(1) - 0.4; o += 1.0) edgeQuad(white, e, Math.min(ca, cb), Math.max(ca, cb), o, o + 0.5, 0.035);
+      }
+      // 차로 화살표 (차로별 진행방향 지정이 있으면 그대로 — 정지선 없는 분기점 포함)
+      const node = dir > 0 ? e.b : e.a;
+      const use = net.laneUse(e, node);
+      if ((end.stop && node.kind === 'signal' && nl >= 2) || use) {
+        const tv = { x: e.u.x * dir, z: e.u.z * dir };
+        const straight = node.edges.some((o) => o !== e && dot(net.away(o, node), tv) > 0.9);
+        const base = end.stop || end.t;
+        for (let i = 1; i <= nl; i++) {
+          const type = use ? use[Math.min(i, use.length) - 1] : straight ? 'straight' : i === 1 ? 'left' : i === nl ? 'right' : 'straight';
+          for (const as of [base + 12, base + 45]) {
+            if (as > e.L - e.ta - e.tb - 10) continue;
+            for (const t of type === 'sl' ? ['straight', 'left'] : type === 'sr' ? ['straight', 'right'] : [type]) arrowMark(white, e, e.sFromEnd(dir, as), e.laneO(dir, i), dir, t);
           }
         }
       }
@@ -679,14 +755,14 @@ function buildRoads(ctx) {
       for (const dir of [1, -1]) {
         const sm = (s0 + s1) / 2 - dir * 20;
         const z = net.zones.find((q) => q.edge === e && sm > q.s0 && sm < q.s1);
-        for (let i = 1; i <= e.lanes; i++) textMark(ctx.text, e, sm, e.laneO(dir, i), dir, z ? (z.limit === 30 ? '30' : 'zone') : '50');
+        for (let i = 1; i <= e.nl(dir); i++) textMark(ctx.text, e, sm, e.laneO(dir, i), dir, z ? (z.limit === 30 ? '30' : 'zone') : '50');
       }
     }
     for (const z of net.zones) {
       if (z.edge !== e || !z.paint) continue;
       for (const dir of [1, -1]) {
         const sz = dir > 0 ? z.s0 + 8 : z.s1 - 8;
-        for (let i = 1; i <= e.lanes; i++) { textMark(ctx.text, e, sz, e.laneO(dir, i), dir, 'zone'); textMark(ctx.text, e, sz + dir * 9, e.laneO(dir, i), dir, z.limit === 30 ? '30' : '50'); }
+        for (let i = 1; i <= e.nl(dir); i++) { textMark(ctx.text, e, sz, e.laneO(dir, i), dir, 'zone'); textMark(ctx.text, e, sz + dir * 9, e.laneO(dir, i), dir, z.limit === 30 ? '30' : '50'); }
       }
     }
 
@@ -695,9 +771,10 @@ function buildRoads(ctx) {
       for (const sg of [-1, 1]) {
         for (let s = e.ta; s < e.L - e.tb; s += 6) {
           const sb = Math.min(e.L - e.tb, s + 6);
-          const ha = ctx.T.hill(...xz(e.pt(s, sg * (e.hw + 13)))), hb = ctx.T.hill(...xz(e.pt(sb, sg * (e.hw + 13))));
+          const hs = e.hwS(sg);
+          const ha = ctx.T.hill(...xz(e.pt(s, sg * (hs + 13)))), hb = ctx.T.hill(...xz(e.pt(sb, sg * (hs + 13))));
           if (ha < 1.2 && hb < 1.2) continue;
-          const a = e.pt(s, sg * (e.hw + 4.7)), b = e.pt(sb, sg * (e.hw + 4.7));
+          const a = e.pt(s, sg * (hs + 4.7)), b = e.pt(sb, sg * (hs + 4.7));
           ctx.stone.quad([a.x, 0, a.z], [b.x, 0, b.z], [b.x, hb + 0.4, b.z], [a.x, ha + 0.4, a.z], [0, 0], [(sb - s) / 3, 0], [(sb - s) / 3, (hb + 0.4) / 3], [0, (ha + 0.4) / 3], false);
         }
       }
@@ -711,7 +788,8 @@ function buildRoads(ctx) {
       const pa = e.pocket(-1), pb = e.pocket(1);
       const m0 = pa ? pa[1] : s0 + 1, m1 = pb ? pb[0] : s1 - 1;
       if (m1 > m0) buildMedian(ctx, e, m0, m1);
-      const uSide = e.uturn === 'b' ? -1 : 1; // 유턴구역선이 그려지는 쪽 (유턴 차로 반대편 경계)
+      if (e.centerGuard) buildCenterGuard(ctx, e, s0, s1);
+      const uSide = e.uturnAt('b') ? -1 : 1; // 유턴구역선이 그려지는 쪽 (유턴 차로 반대편 경계)
       for (const sg of [-1, 1]) {
         const own = e.pocket(sg);
         const o = sg * (e.median / 2 - 0.1);
@@ -724,15 +802,96 @@ function buildRoads(ctx) {
     }
   }
 
+  // 노면 유도선: 교차로 안에서 어긋난 차로를 잇는 흰 점선 (영상 5:40)
+  for (const g of net.guides) {
+    const { node: n, eIn, dIn, eOut, dOut } = g;
+    const endIn = eIn.endFor(dIn), endOut = eOut.endFor(-dOut);
+    const sA = eIn.sFromEnd(dIn, endIn.cw ? endIn.cw[0] : endIn.t), sB = eOut.sFromEnd(-dOut, endOut.cw ? endOut.cw[0] : endOut.t);
+    const tA = { x: eIn.u.x * dIn, z: eIn.u.z * dIn }, tB = { x: eOut.u.x * dOut, z: eOut.u.z * dOut };
+    if (g.left) {
+      // 좌회전 유도선: 좌회전 차로(전용차로 또는 노면 화살표 좌회전 차로) 경계를 진출로 1차로부터 잇는다
+      const pk = eIn.pocket(dIn), use = net.laneUse(eIn, n);
+      const k = pk ? 1 : use ? use.filter((t) => t === 'left' || t === 'sl').length : 1;
+      for (let i = 0; i <= k; i++) {
+        const oa = pk ? (i - 0.5) * eIn.laneW : eIn.median / 2 + i * eIn.laneW;
+        const A = eIn.pt(sA, dIn * oa), B = eOut.pt(sB, dOut * (eOut.median / 2 + i * eOut.laneW));
+        curveMark(white, A, tA, B, tB, n.h, 0.15, 1);
+      }
+      continue;
+    }
+    for (let i = 0; i <= Math.min(eIn.nl(dIn), eOut.nl(dOut)); i++) {
+      const A = eIn.pt(sA, dIn * (eIn.median / 2 + i * eIn.laneW)), B = eOut.pt(sB, dOut * (eOut.median / 2 + i * eOut.laneW));
+      curveMark(white, A, tA, B, tB, n.h, 0.15, 1);
+    }
+  }
+  // 연결로 분기·합류점: 본선 차선·중앙선을 분기점 너머로 이어 긋는다 (연결로가 붙은 쪽 가장자리선은 끊는다)
+  for (const n of Object.values(net.nodes)) {
+    if (n.kind !== 'plain' || (n.edges.length < 3 && !n.taper)) continue;
+    for (const e1 of n.edges) for (const e2 of n.edges) {
+      if (e1.id >= e2.id || e1.oneway || e2.oneway) continue;
+      const t = net.away(e2, n), w1 = net.away(e1, n);
+      if (dot(w1, t) > -0.97) continue;
+      const rt = { x: -t.z, z: t.x };
+      const sides = n.edges.filter((o) => o !== e1 && o !== e2).map((o) => Math.sign(dot(net.away(o, n), rt)));
+      const s1 = n === e1.a ? e1.ta : e1.L - e1.tb, s2 = n === e2.a ? e2.ta : e2.L - e2.tb;
+      const k1 = n === e1.a ? -1 : 1, k2 = n === e2.a ? 1 : -1; // q(진행방향 t 오른쪽 거리) → 각 구간의 o
+      const line = (buf, qa, qb, w, dash) => curveMark(buf, e1.pt(s1, qa * k1), t, e2.pt(s2, qb * k2), t, n.h, w, dash);
+      for (const sg of [1, -1]) {
+        const n1 = e1.nl(sg * k1), n2 = e2.nl(sg * k2), eW = n1 > n2 ? e1 : e2;
+        const c1 = e1.median >= 1 ? e1.median / 2 - 0.1 : 0.18, c2 = e2.median >= 1 ? e2.median / 2 - 0.1 : 0.18;
+        if (n.taper && n1 !== n2) {
+          // 전환 구간에서 차로가 느는 쪽: 넓은 쪽의 각 차선을 좁은 쪽에서 가장 가까운 선(중앙선·차선·가장자리)에서 이어 긋는다
+          //  → 왼쪽에 차로가 생기면 기존 차선은 곧게 이어지고, 새 1차로 경계선은 중앙선에서 갈라져 나온다
+          const wideIs1 = n1 > n2, eN = wideIs1 ? e2 : e1, sN = wideIs1 ? s2 : s1, kN = wideIs1 ? k2 : k1, sWd = wideIs1 ? s1 : s2, kW = wideIs1 ? k1 : k2;
+          const nN = Math.min(n1, n2), cN = wideIs1 ? c2 : c1;
+          const qN = [sg * cN, ...Array.from({ length: nN - 1 }, (_, i) => sg * (eN.median / 2 + (i + 1) * eN.laneW)), sg * (eN.hwS(sg * kN) - 0.25)];
+          for (let i = 1; i < Math.max(n1, n2); i++) {
+            const PW = eW.pt(sWd, sg * (eW.median / 2 + i * eW.laneW) * kW);
+            let PN = null, bd = Infinity;
+            for (const q of qN) { const p = eN.pt(sN, q * kN), dd = Math.hypot(p.x - PW.x, p.z - PW.z); if (dd < bd) { bd = dd; PN = p; } }
+            if (wideIs1) curveMark(white, PW, t, PN, t, n.h, 0.15, dashOf(eW)[0]); else curveMark(white, PN, t, PW, t, n.h, 0.15, dashOf(eW)[0]);
+          }
+        } else {
+          const nl = Math.min(n1, n2);
+          for (let i = 1; i < nl; i++) line(white, sg * (e1.median / 2 + i * e1.laneW), sg * (e2.median / 2 + i * e2.laneW), 0.15, dashOf(e1)[0]);
+          // 합류·분기로 차로가 하나 늘거나 주는 곳: 늘어난 차로 경계선도 분기점을 가로질러 끝까지 긋는다
+          for (let i = nl; i < Math.max(n1, n2); i++) { const q = sg * (eW.median / 2 + i * eW.laneW); line(white, q, q, 0.15, dashOf(eW)[0]); }
+        }
+        if (!sides.includes(sg)) line(white, sg * (e1.hwS(sg * k1) - 0.25), sg * (e2.hwS(sg * k2) - 0.25), 0.15, null);
+        line(yellow, sg * c1, sg * c2, 0.15, null);
+        if (n.taper) {
+          // 전환 구간 인도: 양쪽 구간의 인도 띠를 곡선으로 잇는다
+          const ha = e1.hwS(sg * k1), hb = e2.hwS(sg * k2);
+          const inner = curvePts(e1.pt(s1, sg * (ha + 0.25) * k1), t, e2.pt(s2, sg * (hb + 0.25) * k2), t, 12);
+          const outer = curvePts(e1.pt(s1, sg * (ha + 4.5) * k1), t, e2.pt(s2, sg * (hb + 4.5) * k2), t, 12);
+          const y = n.h + 0.03;
+          for (let j = 1; j < inner.length; j++) {
+            const P = (p) => [p.x, y, p.z];
+            side.quad(P(inner[j - 1]), P(inner[j]), P(outer[j]), P(outer[j - 1]), [0, 0], [0, 1], [1, 1], [1, 0]);
+          }
+        }
+      }
+    }
+  }
+  // 백색 안전지대: 테두리 실선 + 빗금 (영상 8:22)
+  for (const z of net.safety) {
+    const e = z.edge, d = z.dir;
+    const oIn = d * (e.median / 2 + (z.lane - 1) * e.laneW + 0.1), oOut = d * (e.hwS(d) - 0.25);
+    for (const o of [oIn, oOut]) lineMark(white, e, z.s0, z.s1, o, 0.2, null);
+    for (const s of [z.s0, z.s1]) edgeQuad(white, e, s - 0.1, s + 0.1, Math.min(oIn, oOut), Math.max(oIn, oOut), 0.036);
+    const P = (s, o) => { const p = e.pt(s, o); return [p.x, e.h(s) + 0.037, p.z]; };
+    for (let s = z.s0 + 0.5; s < z.s1 - 3.2; s += 3) white.quad(P(s, oIn), P(s + 0.4, oIn), P(s + 2.9, oOut), P(s + 2.5, oOut));
+  }
+
   // 어린이보호구역 (붉은 포장)
-  for (const z of net.zones) if (z.paint) edgeQuad(red, z.edge, z.s0, z.s1, -z.edge.hw + 0.3, z.edge.hw - 0.3, 0.028);
+  for (const z of net.zones) if (z.paint) edgeQuad(red, z.edge, z.s0, z.s1, -z.edge.hwS(-1) + 0.3, z.edge.hwS(1) - 0.3, 0.028);
 
   // 코스 종료 지점: 정차 가능 구간 (노란 점선)
   for (const c of Object.values(COURSES)) {
     const { end } = c;
     const e = net.edgeBetween(end.a, end.b);
     const [sa, sb] = end.zone.map((px) => e.local(toWorld(px, 0).x, e.a.z).s);
-    lineMark(yellow, e, Math.min(sa, sb), Math.max(sa, sb), end.dir * (e.hw - 0.05), 0.15, [1, 1]);
+    lineMark(yellow, e, Math.min(sa, sb), Math.max(sa, sb), end.dir * (e.hwS(end.dir) - 0.05), 0.15, [1, 1]);
   }
 
   const add = (buf, mat, cast = false) => {
@@ -777,6 +936,24 @@ function buildMedian(ctx, e, m0, m1) {
   }
 }
 
+// 좌회전·유턴 차로가 분리대 자리를 쓰는 곳에도 반대 차로와의 경계에 가드레일 (유턴 구간은 비움)
+function buildCenterGuard(ctx, e, s0, s1) {
+  const yaw = yawX(e.u), step = 4, pa = e.pocket(-1), pb = e.pocket(1), zones = e.uturnZones();
+  const inR = (s, r) => r && s >= r[0] && s <= r[1];
+  for (let s = s0 + 1; s < s1 - 1; s += step) {
+    const sb = Math.min(s1 - 1, s + step), sm = (s + sb) / 2;
+    const inA = inR(sm, pa), inB = inR(sm, pb);
+    if (inA === inB || zones.some((z) => sm > z[0] - 2 && sm < z[1] + 2)) continue; // 둘 다 없으면 분리대, 둘 다면 비움
+    const o = (inA ? 1 : -1) * (e.median / 2); // 전용차로 반대편 경계
+    const ha = e.h(s), hb = e.h(sb), hm = (ha + hb) / 2, len = sb - s, c = e.pt(sm, o);
+    const tilt = new THREE.Matrix4().makeRotationZ(Math.atan2(hb - ha, len));
+    ctx.batch.box(MAT.concrete, len, 0.22, 0.5, mtx(c.x, hm + 0.11, c.z, yaw).multiply(tilt)); // 받침 턱
+    for (const y of [0.55, 0.85]) for (const dz of [-0.12, 0.12]) ctx.batch.box(MAT.guard, len, 0.3, 0.05, mtx(c.x, hm + y, c.z, yaw).multiply(tilt).multiply(mtx(0, 0, dz)));
+    ctx.batch.box(MAT.guard, 0.12, 0.9, 0.12, mtx(c.x, hm + 0.45, c.z, yaw));
+    ctx.colliders.push({ x: c.x, z: c.z, ux: e.u.x, uz: e.u.z, hu: len / 2, hr: 0.15, ymax: hm + 2 });
+  }
+}
+
 // 중앙선 위 시선유도봉 (황흑 / 주황 규제봉)
 function centerPosts(ctx, e, s0, s1) {
   const orange = e.centerPosts === 'bollard';
@@ -788,6 +965,35 @@ function centerPosts(ctx, e, s0, s1) {
     list.push(g.toNonIndexed());
   }
   if (list.length) ctx.batch.add(orange ? MAT.orange : MAT.fencePost, mergeGeometries(list), null, 'road');
+}
+
+// A(방향 tA) → B(방향 tB) 3차 베지어 위의 점 n+1개
+function curvePts(A, tA, B, tB, n) {
+  const k = Math.hypot(B.x - A.x, B.z - A.z) * 0.4;
+  const c1 = { x: A.x + tA.x * k, z: A.z + tA.z * k }, c2 = { x: B.x - tB.x * k, z: B.z - tB.z * k };
+  return Array.from({ length: n + 1 }, (_, i) => {
+    const t = i / n, u = 1 - t, q = [u * u * u, 3 * u * u * t, 3 * u * t * t, t * t * t];
+    return { x: q[0] * A.x + q[1] * c1.x + q[2] * c2.x + q[3] * B.x, z: q[0] * A.z + q[1] * c1.z + q[2] * c2.z + q[3] * B.z };
+  });
+}
+// 곡선 노면선: A(방향 tA) → B(방향 tB) 3차 베지어, dash m 칠하고 dash m 비움 (null이면 실선)
+function curveMark(buf, A, tA, B, tB, h, w, dash) {
+  const k = Math.hypot(B.x - A.x, B.z - A.z) * 0.4;
+  const c1 = { x: A.x + tA.x * k, z: A.z + tA.z * k }, c2 = { x: B.x - tB.x * k, z: B.z - tB.z * k };
+  const at = (t) => {
+    const u = 1 - t, q = [u * u * u, 3 * u * u * t, 3 * u * t * t, t * t * t];
+    return { x: q[0] * A.x + q[1] * c1.x + q[2] * c2.x + q[3] * B.x, z: q[0] * A.z + q[1] * c1.z + q[2] * c2.z + q[3] * B.z };
+  };
+  const steps = Math.max(8, Math.ceil(k * 2.5)), y = h + 0.04;
+  let acc = 0, p = at(0);
+  for (let j = 1; j <= steps; j++) {
+    const q = at(j / steps), len = Math.hypot(q.x - p.x, q.z - p.z) || 1e-6;
+    if (!dash || acc % (2 * dash) < dash) {
+      const nx = (-(q.z - p.z) / len) * (w / 2), nz = ((q.x - p.x) / len) * (w / 2);
+      buf.quad([p.x + nx, y, p.z + nz], [q.x + nx, y, q.z + nz], [q.x - nx, y, q.z - nz], [p.x - nx, y, p.z - nz]);
+    }
+    acc += len; p = q;
+  }
 }
 
 // 횡단보도 예고 표시(◇)
@@ -823,14 +1029,15 @@ function textMark(buf, e, s, o, dir, key) {
 function buildElevated(ctx) {
   const walls = new Buf();
   for (const e of ctx.net.elevated) {
-    // 교차 구역(노드) 안에는 난간·옹벽을 두지 않는다
-    for (let s = e.ta; s < e.L - e.tb; s += 4) {
-      const s2 = Math.min(e.L - e.tb, s + 4), hm = e.h((s + s2) / 2);
+    // 교차 구역(노드) 안에는 난간·옹벽을 두지 않는다. 교차로 쪽은 모서리 곡선(회전 차량이 지나는 곳) 6m 앞에서 끝낸다
+    const sA = e.ta + (e.a.edges.length >= 3 ? 6 : 0), sB = e.L - e.tb - (e.b.edges.length >= 3 ? 6 : 0);
+    for (let s = sA; s < sB; s += 4) {
+      const s2 = Math.min(sB, s + 4), hm = e.h((s + s2) / 2);
       if (hm < 0.05) continue;
       const mid = e.pt((s + s2) / 2, 0);
       const overRail = polyDist(mid.x, mid.z, ctx.rail) < 12 || ctx.net.roadBelow(e, mid.x, mid.z);
       for (const sg of [-1, 1]) {
-        const o = sg * (e.hw + 1.9);
+        const o = sg * (e.hwS(sg) + 1.9);
         const a = e.pt(s, o), b = e.pt(s2, o), ha = e.h(s), hb = e.h(s2);
         // 난간 (콘크리트 방호벽)
         walls.quad([a.x, ha, a.z], [b.x, hb, b.z], [b.x, hb + 0.9, b.z], [a.x, ha + 0.9, a.z], [0, 0], [1, 0], [1, 1], [0, 1], false);
@@ -845,7 +1052,8 @@ function buildElevated(ctx) {
       if (overRail) {
         // 교량 상판 하부
         const top = e.pt((s + s2) / 2, 0);
-        ctx.batch.box(MAT.darkConcrete, s2 - s, 1.2, e.hw * 2 + 4, mtx(top.x, hm - 0.65, top.z, yawX(e.u)));
+        const topC = e.pt((s + s2) / 2, (e.hwS(1) - e.hwS(-1)) / 2);
+        ctx.batch.box(MAT.darkConcrete, s2 - s, 1.2, e.hwS(1) + e.hwS(-1) + 4, mtx(topC.x, hm - 0.7, topC.z, yawX(e.u)), 'road'); // 지형 기복을 따라 상판 바로 아래
       }
     }
     // 교량 구간 양 끝 교각 (철길/도로 위가 트이는 곳)
@@ -856,7 +1064,7 @@ function buildElevated(ctx) {
       if (prevOpen !== null && open !== prevOpen) {
         const ps = open ? s - 3 : s + 1;
         const hh = e.h(ps);
-        for (const o of [-e.hw + 1, 0, e.hw - 1]) {
+        for (const o of [-e.hwS(-1) + 1, 0, e.hwS(1) - 1]) {
           const q = e.pt(ps, o);
           ctx.batch.box(MAT.darkConcrete, 1.4, hh - 1.2, 1.4, mtx(q.x, (hh - 1.2) / 2, q.z, yawX(e.u)));
         }
@@ -886,6 +1094,11 @@ function buildOverpass(ctx) {
     ctx.batch.box(MAT.concrete, W, 1.1, zb - za + 0.1, mtx(x, hm - 0.55, (za + zb) / 2, 0, pitch));
     for (const sx of [-1, 1]) ctx.batch.box(MAT.concrete, 0.3, 0.9, zb - za + 0.1, mtx(x + sx * (W / 2 - 0.15), hm + 0.45, (za + zb) / 2, 0, pitch));
     if (hm < 5.5 && hm > 0.3) ctx.colliders.push({ x, z: (za + zb) / 2, ux: 0, uz: 1, hu: seg / 2, hr: W / 2 });
+    // 큰길 위를 건너는 구간은 파란 철골 거더 (상판 아래 박스 + 옆면 띠)
+    if (hm > 5) {
+      ctx.batch.box(MAT.steelBlue, W - 0.8, 1.3, zb - za + 0.1, mtx(x, hm - 1.1 - 0.65, (za + zb) / 2, 0, pitch));
+      for (const sx of [-1, 1]) ctx.batch.box(MAT.steelBlue, 0.12, 0.7, zb - za + 0.1, mtx(x + sx * (W / 2 + 0.06), hm - 0.4, (za + zb) / 2, 0, pitch));
+    }
   }
   for (let z = z0 + ramp; z < z1 - ramp; z += 24) {
     const onMain = mainRoads.some((e) => { const l = e.local(x, z); return l.s > -2 && l.s < e.L + 2 && Math.abs(l.o) < e.hw + 5; });
@@ -907,6 +1120,7 @@ function buildRail(ctx) {
     const A = pts[i - 1], B = pts[i];
     const L = Math.hypot(B.x - A.x, B.z - A.z), u = { x: (B.x - A.x) / L, z: (B.z - A.z) / L }, r = { x: -u.z, z: u.x };
     const P = (s, o, y) => [A.x + u.x * s + r.x * o, y, A.z + u.z * s + r.z * o];
+    if (A.d > 0 || B.d > 0) { buildTrench(ctx, A, B, L, u, r, P, ballast); continue; }
     for (const tc of [-2.1, 2.1]) {
       ballast.quad(P(-0.5, tc - 1.6, 0.06), P(L + 0.5, tc - 1.6, 0.06), P(L + 0.5, tc + 1.6, 0.06), P(-0.5, tc + 1.6, 0.06),
         [0, 0], [0, (L + 1) / 2.4], [1, (L + 1) / 2.4], [1, 0]);
@@ -940,6 +1154,58 @@ function buildRail(ctx) {
   ctx.scene.add(m);
 
   for (const st of STATIONS) buildStation(ctx, st);
+}
+
+// 땅을 파고 지나는 철길 구간 (역곡고가교 밑): 4m마다 깊이를 따라 낮추고, 방음벽 대신 옹벽(땅 위 1.1m 난간),
+// 위를 지나는 도로에는 다리 상판과 난간
+function buildTrench(ctx, A, B, L, u, r, P, ballast) {
+  const b = ctx.batch, yaw = yawX(u);
+  for (let s = 0; s < L - 1e-6; s += 4) {
+    const s2 = Math.min(L, s + 4), len = s2 - s;
+    const dAt = (ss) => { const p = P(ss, 0, 0); return A.d + ((B.d - A.d) * ss) / L + bump(p[0], p[2]); };
+    const da = dAt(s), db = dAt(s2), dm = (da + db) / 2;
+    for (const tc of [-2.1, 2.1]) {
+      ballast.quad(P(s - 0.05, tc - 1.6, 0.06 - da), P(s2 + 0.05, tc - 1.6, 0.06 - db), P(s2 + 0.05, tc + 1.6, 0.06 - db), P(s - 0.05, tc + 1.6, 0.06 - da),
+        [0, s / 2.4], [0, s2 / 2.4], [1, s2 / 2.4], [1, s / 2.4]);
+      for (const rr of [-0.75, 0.75]) {
+        const m = P((s + s2) / 2, tc + rr, 0.14 - dm);
+        b.box(MAT.rail, len + 0.05, 0.14, 0.09, mtx(m[0], m[1], m[2], yaw));
+      }
+      const w = P((s + s2) / 2, tc, 5.6 - dm);
+      b.box(MAT.darkMetal, len, 0.03, 0.03, mtx(w[0], w[1], w[2], yaw));
+    }
+    for (const sg of [-1, 1]) {
+      const m = P((s + s2) / 2, sg * TRENCH_HW, 0);
+      if (ctx.net.roadClearance(m[0], m[2]) < 5) continue; // 다리 밑 (도로가 지나는 곳)
+      const h = dm + 1.1;
+      b.box(MAT.concrete, len + 0.05, h, 0.35, mtx(m[0], 1.1 - h / 2, m[2], yaw));
+      ctx.colliders.push({ x: m[0], z: m[2], ux: u.x, uz: u.z, hu: len / 2, hr: 0.4, ymax: 3.2 });
+    }
+    if (Math.floor(s2 / 45) > Math.floor(s / 45) && dm > 0.5) {
+      const c = P(s2, 0, 0);
+      if (ctx.net.roadClearance(c[0], c[2]) > 4) {
+        for (const sg of [-1, 1]) { const q = P(s2, sg * 5.6, 3.6 - dm); b.box(MAT.metal, 0.3, 7.2, 0.3, mtx(q[0], q[1], q[2], yaw)); }
+        const q = P(s2, 0, 6.9 - dm); b.box(MAT.metal, 0.25, 0.25, 11.5, mtx(q[0], q[1], q[2], yaw));
+      }
+    }
+  }
+  // 파인 곳을 건너는 도로: 상판 아래면 + 양쪽 난간
+  for (const e of ctx.net.edges) {
+    if (e.profile) continue;
+    for (let s = e.ta; s < e.L - e.tb; s += 2) {
+      const c = e.pt(s, 0), rc = railCut(c.x, c.z, ctx.rail);
+      if (rc.d < 1 || rc.dist > TRENCH_HW + 1) continue;
+      if (segDist(c.x, c.z, A, B) > TRENCH_HW + 1.5) continue; // 이 구간 옆일 때만 (중복 방지)
+      const w = e.hwS(1) + e.hwS(-1) + 9, oc = (e.hwS(1) - e.hwS(-1)) / 2, m = e.pt(s + 1, oc);
+      b.box(MAT.darkConcrete, 2.05, 1.2, w, mtx(m.x, -0.7, m.z, yawX(e.u)), 'road'); // 지형 기복을 따라 도로면 바로 아래
+      for (const sg of [-1, 1]) {
+        const q = e.pt(s + 1, sg * (e.hwS(sg) + 4.4));
+        b.box(MAT.guard, 2.05, 0.08, 0.08, mtx(q.x, 1.05, q.z, yawX(e.u)));
+        b.box(MAT.guard, 2.05, 0.08, 0.08, mtx(q.x, 0.6, q.z, yawX(e.u)));
+        b.box(MAT.guard, 0.08, 1.1, 0.08, mtx(q.x, 0.55, q.z));
+      }
+    }
+  }
 }
 
 // 선상역사: 철길 위 대합실 + 한쪽 출입구 건물
@@ -997,6 +1263,29 @@ function buildFootbridge(ctx) {
   ctx.scene.add(signMesh(textTex('어린이보호구역', { bg: '#f7d117', fg: '#c1121f', h: 96 }), 6, 1, mtx(p.x + 1.62, 5.6, p.z + 0, Math.PI / 2)));
 }
 
+// ---------------------------------------------------------------- 신호등 없는 횡단보도 표지 (파란 사각 표지, 다가오는 쪽 오른편)
+const zebraTex = canvasTex(256, 256, (g) => {
+  g.fillStyle = '#1f5fbf'; g.fillRect(0, 0, 256, 256);
+  g.strokeStyle = '#fff'; g.lineWidth = 12; g.strokeRect(10, 10, 236, 236);
+  g.fillStyle = '#fff';
+  g.beginPath(); g.moveTo(128, 34); g.lineTo(222, 196); g.lineTo(34, 196); g.closePath(); g.fill();
+  g.fillStyle = '#1f5fbf';
+  g.beginPath(); g.arc(128, 92, 13, 0, Math.PI * 2); g.fill();
+  g.fillRect(118, 108, 20, 44);
+  g.save(); g.translate(122, 150); g.rotate(0.35); g.fillRect(-5, 0, 10, 34); g.restore();
+  g.save(); g.translate(134, 150); g.rotate(-0.35); g.fillRect(-5, 0, 10, 34); g.restore();
+  for (let i = 0; i < 5; i++) g.fillRect(64 + i * 28, 204, 16, 30);
+}, false);
+function zebraSigns(ctx, n) {
+  for (const e of n.edges) {
+    if (n !== e.b) continue; // 다가오는 구간
+    const tv = e.u, s = e.sFromEnd(1, e.ends.b.stop), p = e.pt(s, e.hwS(1) + 1.0), y = e.h(s);
+    ctx.batch.add(MAT.metal, new THREE.CylinderGeometry(0.06, 0.06, 3.0, 8), mtx(p.x, y + 1.5, p.z));
+    ctx.scene.add(signMesh(zebraTex, 0.9, 0.9, mtx(p.x, y + 2.6, p.z, yawZ({ x: -tv.x, z: -tv.z })).multiply(mtx(0, 0, 0.05))));
+    ctx.reserved.push({ x: p.x, z: p.z, r: 3 });
+  }
+}
+
 // ---------------------------------------------------------------- 신호등
 const LAMP = {
   R: [0xff2d1a, 0x3a0f0a], Y: [0xffb300, 0x3a2a06], G: [0x14e38a, 0x06301d], A: [0x14e38a, 0x06301d],
@@ -1034,13 +1323,16 @@ function buildSignals(ctx) {
   const out = [];
   let k = 0;
   for (const n of Object.values(net.nodes)) {
+    if (n.kind === 'zebra') { zebraSigns(ctx, n); continue; }
     if (n.kind === 'plain') continue;
     const sets = {};
     for (const g of ['main', 'cross']) {
       sets[g] = { R: lampMat('R'), Y: lampMat('Y'), G: lampMat('G'), A: n.kind === 'signal' ? lampMat('A') : null };
       sets['p' + g] = { R: pedMat('R'), G: pedMat('G') };
     }
-    n.sig = { sets, offset: (k++ * 17) % 60 };
+    const rightE = n.edges.find((e) => net.hasRightSignal(e, n));
+    if (rightE) sets.right = { R: lampMat('R'), Y: lampMat('Y'), G: lampMat('G') };
+    n.sig = { sets, offset: (k++ * 17) % 60, right: rightE ? { group: signalGroup(rightE, n) } : null };
     out.push(n);
 
     for (const e of n.edges) {
@@ -1048,37 +1340,68 @@ function buildSignals(ctx) {
       const dirIn = n === e.b ? 1 : -1;
       if (e.oneway && dirIn < 0) continue;
       const four = n.kind === 'signal' && hasLeftTurn(net, e, n); // 좌회전 가능한 방향만 좌회전 화살표 신호등
-      const uturnHere = e.uturn === (dirIn > 0 ? 'b' : 'a');
+      const uturnHere = e.uturnAt(dirIn > 0 ? 'b' : 'a');
       const end = dirIn > 0 ? e.ends.b : e.ends.a;
       const tv = { x: e.u.x * dirIn, z: e.u.z * dirIn }, rv = { x: -tv.z, z: tv.x };
       const cont = n.edges.find((o) => o !== e && dot(net.away(o, n), tv) > 0.9);
-      let fd, farHw = e.hw;
+      let fd, farHw = e.hwS(dirIn);
       if (n.kind === 'crosswalk') fd = CW_W / 2 + 2.5;
-      else if (cont) { fd = (n === cont.a ? cont.ends.a : cont.ends.b).cw[1] + 1.5; farHw = cont.hw; }
+      else if (cont) { fd = (n === cont.a ? cont.ends.a : cont.ends.b).cw[1] + 1.5; farHw = cont.hwS(n === cont.a ? 1 : -1); }
       else fd = Math.max(...n.edges.map((o) => (n === o.a ? o.ta : o.tb))) + 3;
       const base = { x: n.x + tv.x * fd, z: n.z + tv.z * fd };
-      const poleO = farHw + 1.2;
-      const headO = e.median / 2 + e.laneW * Math.min(1.5, e.lanes / 2);
-      const armStart = uturnHere ? -0.5 : headO - 1.2;
-      const pole = { x: base.x + rv.x * poleO, z: base.z + rv.z * poleO };
       const nh = n.h;
-      batch.add(MAT.darkMetal, new THREE.CylinderGeometry(0.16, 0.2, 6.8, 10), mtx(pole.x, nh + 3.4, pole.z));
-      const armLen = poleO - armStart, armMid = poleO - armLen / 2;
-      batch.box(MAT.darkMetal, 0.16, 0.16, armLen, mtx(base.x + rv.x * armMid, nh + 6.5, base.z + rv.z * armMid, yawZ(rv)));
-      ctx.reserved.push({ x: pole.x, z: pole.z, r: 3 });
-
-      const head = { x: base.x + rv.x * headO, z: base.z + rv.z * headO };
       const yaw = yawZ({ x: -tv.x, z: -tv.z });
-      const lamps = four ? ['R', 'Y', 'A', 'G'] : ['R', 'Y', 'G'];
-      const hw = lamps.length * 0.5 + 0.16;
-      batch.box(MAT.darkMetal, hw, 0.58, 0.34, mtx(head.x, nh + 6.1, head.z, yaw));
-      lamps.forEach((l, i) => {
-        const lx = (i - (lamps.length - 1) / 2) * 0.5;
-        const m = new THREE.Mesh(new THREE.CircleGeometry(0.2, 18), sets[g][l]);
-        m.applyMatrix4(mtx(head.x, nh + 6.1, head.z, yaw).multiply(mtx(lx, 0, 0.18)));
-        ctx.scene.add(m);
-        batch.box(MAT.darkMetal, 0.4, 0.06, 0.22, mtx(head.x, nh + 6.1, head.z, yaw).multiply(mtx(lx, 0.2, 0.28)));
-      });
+      // 직진할 길이 없는 3거리 진입로는 적·황·좌회전 화살표 3색 (녹색 없음 — 영상 확인: 오류철도고가 3거리)
+      const lamps = four ? (cont ? ['R', 'Y', 'A', 'G'] : ['R', 'Y', 'A']) : ['R', 'Y', 'G'];
+      // 신호등 개수: 기본은 건너편 1개, 지정된 진입로는 건너편 여러 개 + 정지선 쪽 여러 개
+      const cfg = net.signalHeads.get(`${e.id}>${n.id}`) || { far: 1, near: 0 };
+      const pk = e.pocket(dirIn), nl = e.nl(dirIn);
+      const spread = (cnt) => {
+        if (cnt <= 1) return [e.median / 2 + e.laneW * Math.min(1.5, nl / 2)];
+        const o0 = pk ? 0 : e.median / 2 + e.laneW * 0.5, o1 = e.median / 2 + e.laneW * (nl - 1.5);
+        return Array.from({ length: cnt }, (_, k) => o0 + ((o1 - o0) * k) / (cnt - 1));
+      };
+      // 기둥 + 팔 + 신호등들 (base: 도로 중심선 위 기준점, poleO: 기둥 위치, heads: 신호등 위치 o)
+      const gantry = (bp, poleO, heads, y0) => {
+        const armStart = Math.min(uturnHere ? -0.5 : Infinity, ...heads.map((h) => h - 1.2));
+        const pole = { x: bp.x + rv.x * poleO, z: bp.z + rv.z * poleO };
+        batch.add(MAT.darkMetal, new THREE.CylinderGeometry(0.16, 0.2, 6.8, 10), mtx(pole.x, y0 + 3.4, pole.z));
+        const armLen = poleO - armStart, armMid = poleO - armLen / 2;
+        batch.box(MAT.darkMetal, 0.16, 0.16, armLen, mtx(bp.x + rv.x * armMid, y0 + 6.5, bp.z + rv.z * armMid, yawZ(rv)));
+        ctx.reserved.push({ x: pole.x, z: pole.z, r: 3 });
+        for (const ho of heads) {
+          const head = { x: bp.x + rv.x * ho, z: bp.z + rv.z * ho };
+          batch.box(MAT.darkMetal, lamps.length * 0.5 + 0.16, 0.58, 0.34, mtx(head.x, y0 + 6.1, head.z, yaw));
+          lamps.forEach((l, i) => {
+            const lx = (i - (lamps.length - 1) / 2) * 0.5;
+            const m = new THREE.Mesh(new THREE.CircleGeometry(0.2, 18), sets[g][l]);
+            m.applyMatrix4(mtx(head.x, y0 + 6.1, head.z, yaw).multiply(mtx(lx, 0, 0.18)));
+            ctx.scene.add(m);
+            batch.box(MAT.darkMetal, 0.4, 0.06, 0.22, mtx(head.x, y0 + 6.1, head.z, yaw).multiply(mtx(lx, 0.2, 0.28)));
+          });
+        }
+      };
+      gantry(base, farHw + 1.2, spread(cfg.far), nh);
+      if (net.hasRightSignal(e, n) && end.cw) {
+        // 우회전 전용 신호등 (영상 C코스 11:41): 진입로 오른쪽 모퉁이, 횡단보도 바로 너머 기둥에 3색등 1개
+        const sr = e.sFromEnd(dirIn, end.cw[0] - 1), y0 = e.h(sr), hs = e.hwS(dirIn);
+        const pole = e.pt(sr, dirIn * (hs + 1.4)), head = e.pt(sr, dirIn * (hs - 0.9));
+        batch.add(MAT.darkMetal, new THREE.CylinderGeometry(0.13, 0.16, 5.6, 10), mtx(pole.x, y0 + 2.8, pole.z));
+        const am = e.pt(sr, dirIn * (hs + 0.25));
+        batch.box(MAT.darkMetal, 0.12, 0.12, 2.5, mtx(am.x, y0 + 5.3, am.z, yawZ(rv)));
+        batch.box(MAT.darkMetal, 1.66, 0.58, 0.34, mtx(head.x, y0 + 5.0, head.z, yaw));
+        ['R', 'Y', 'G'].forEach((l, i) => {
+          const m = new THREE.Mesh(new THREE.CircleGeometry(0.2, 18), sets.right[l]);
+          m.applyMatrix4(mtx(head.x, y0 + 5.0, head.z, yaw).multiply(mtx((i - 1) * 0.5, 0, 0.18)));
+          ctx.scene.add(m);
+          batch.box(MAT.darkMetal, 0.4, 0.06, 0.22, mtx(head.x, y0 + 5.0, head.z, yaw).multiply(mtx((i - 1) * 0.5, 0.2, 0.28)));
+        });
+        ctx.reserved.push({ x: pole.x, z: pole.z, r: 3 });
+      }
+      if (cfg.near && end.stop) {
+        const sn = e.sFromEnd(dirIn, end.stop + 2), bn = e.pt(sn, 0);
+        gantry(bn, e.hwS(dirIn) + 1.2, spread(cfg.near), e.h(sn));
+      }
       if (uturnHere) {
         const us = { x: base.x + rv.x * 0.3, z: base.z + rv.z * 0.3 };
         ctx.scene.add(signMesh(uturnTex, 1.0, 1.0, mtx(us.x, nh + 6.0, us.z, yaw)));
@@ -1090,7 +1413,7 @@ function buildSignals(ctx) {
       const scw = e.sFromEnd(dirIn, (end.cw[0] + end.cw[1]) / 2);
       for (const sg of [-1, 1]) {
         if (n.kind === 'crosswalk' && dirIn < 0) continue; // 단일로 횡단보도는 한쪽 구간에서만
-        const p = e.pt(scw, sg * (e.hw + 1.0));
+        const p = e.pt(scw, sg * (e.hwS(sg) + 1.0));
         const f = { x: -e.r.x * sg, z: -e.r.z * sg };
         const ph = e.h(scw);
         batch.add(MAT.darkMetal, new THREE.CylinderGeometry(0.08, 0.08, 2.6, 8), mtx(p.x, ph + 1.3, p.z));
@@ -1156,7 +1479,7 @@ function buildRoadSigns(ctx) {
     const n = nearest(toWorld(x, y));
     if (!n) continue;
     const sg = n.o >= 0 ? 1 : -1, e = n.e;
-    const p = e.pt(n.s, sg * (e.hw + 1.3)), h = e.h(n.s);
+    const p = e.pt(n.s, sg * (e.hwS(sg) + 1.3)), h = e.h(n.s);
     batch.add(MAT.metal, new THREE.CylinderGeometry(0.05, 0.05, 3, 8), mtx(p.x, h + 1.5, p.z));
     scene.add(signMesh(speedTex, 0.9, 0.9, mtx(p.x, h + 3.1, p.z, yawZ({ x: -e.u.x * sg, z: -e.u.z * sg }))));
   }
@@ -1165,12 +1488,12 @@ function buildRoadSigns(ctx) {
     const dir = e.b.id === to ? 1 : -1;
     const end = e.endFor(dir);
     const s = e.sFromEnd(dir, end.stop + 70);
-    const pole = e.pt(s, dir * (e.hw + 1.5));
+    const pole = e.pt(s, dir * (e.hwS(dir) + 1.5));
     const panelO = dir * (e.median / 2 + e.laneW * 1.6);
     const panel = e.pt(s, panelO);
     const gh = e.h(s);
     batch.add(MAT.metal, new THREE.CylinderGeometry(0.25, 0.3, 8.4, 10), mtx(pole.x, gh + 4.2, pole.z));
-    const armLen = Math.abs(e.hw + 1.5 - Math.abs(panelO)) + 3, mid = e.pt(s, dir * (e.hw + 1.5) - dir * armLen / 2);
+    const armLen = Math.abs(e.hwS(dir) + 1.5 - Math.abs(panelO)) + 3, mid = e.pt(s, dir * (e.hwS(dir) + 1.5) - dir * armLen / 2);
     batch.box(MAT.metal, 0.3, 0.3, armLen, mtx(mid.x, gh + 8, mid.z, yawZ(e.r)));
     scene.add(signMesh(guideTex(L, St, Rt), 7.2, 3, mtx(panel.x, gh + 7.4, panel.z, yawZ({ x: -e.u.x * dir, z: -e.u.z * dir })), true));
     ctx.reserved.push({ x: pole.x, z: pole.z, r: 3 });
@@ -1184,7 +1507,7 @@ function buildRoadSigns(ctx) {
   for (const z of net.zones) {
     const e = z.edge;
     for (const [s, dir] of [[z.s0, 1], [z.s1, -1]]) {
-      const p = e.pt(s - dir * 4, dir * (e.hw + 1.3)), h = e.h(s);
+      const p = e.pt(s - dir * 4, dir * (e.hwS(dir) + 1.3)), h = e.h(s);
       const fy = yawZ({ x: -e.u.x * dir, z: -e.u.z * dir });
       batch.add(MAT.metal, new THREE.CylinderGeometry(0.05, 0.05, 3.4, 8), mtx(p.x, h + 1.7, p.z));
       scene.add(signMesh(zoneTex, 1.8, 0.6, mtx(p.x, h + 2.6, p.z, fy)));
@@ -1205,9 +1528,9 @@ function buildStreetFurniture(ctx) {
       if (e.type !== 'local') {
         for (let s = s0 + 5; s < s1; s += 36) {
           if (e.h(s) > 0.05) continue;
-          const p = e.pt(s, sg * (e.hw + 0.9)), q = e.pt(s, sg * (e.hw - 1.4));
+          const p = e.pt(s, sg * (e.hwS(sg) + 0.9)), q = e.pt(s, sg * (e.hwS(sg) - 1.4));
           lights.push(new THREE.CylinderGeometry(0.1, 0.14, 9, 8).applyMatrix4(mtx(p.x, 4.5, p.z)));
-          const mid = e.pt(s, sg * (e.hw - 0.25));
+          const mid = e.pt(s, sg * (e.hwS(sg) - 0.25));
           lights.push(new THREE.BoxGeometry(0.1, 0.1, 2.3).applyMatrix4(mtx(mid.x, 8.9, mid.z, yawZ(e.r))));
           heads.push(new THREE.BoxGeometry(0.35, 0.14, 0.7).applyMatrix4(mtx(q.x, 8.8, q.z, yawZ(e.r))));
         }
@@ -1215,7 +1538,7 @@ function buildStreetFurniture(ctx) {
       // 가로수 (플라타너스/은행나무)
       for (let s = s0 + 18 + R(0, 4); s < s1; s += R(9, 13)) {
         if (e.h(s) > 0.05 || rand() < 0.12) continue;
-        const p = e.pt(s, sg * (e.hw + 2.8));
+        const p = e.pt(s, sg * (e.hwS(sg) + 2.8));
         const th = R(2.6, 3.4), cr = R(1.8, 2.8);
         trunks.push(new THREE.CylinderGeometry(0.15, 0.22, th, 6).applyMatrix4(mtx(p.x, th / 2, p.z)));
         const c = new THREE.IcosahedronGeometry(cr, 1);
@@ -1228,13 +1551,13 @@ function buildStreetFurniture(ctx) {
         let prev = null;
         for (let s = s0; s < s1; s += 40) {
           if (e.h(s) > 0.05) { prev = null; continue; }
-          const p = e.pt(s, sg * (e.hw + 3.9));
+          const p = e.pt(s, sg * (e.hwS(sg) + 3.9));
           poles.push(new THREE.CylinderGeometry(0.13, 0.19, 10, 8).applyMatrix4(mtx(p.x, 5, p.z)));
           poles.push(new THREE.BoxGeometry(1.8, 0.12, 0.12).applyMatrix4(mtx(p.x, 9.3, p.z, yawZ(e.u))));
           if (prev) {
             const L = Math.hypot(p.x - prev.x, p.z - prev.z);
             for (const dx of [-0.7, 0, 0.7]) {
-              const m = e.pt(s - L / 2, sg * (e.hw + 3.9) + dx);
+              const m = e.pt(s - L / 2, sg * (e.hwS(sg) + 3.9) + dx);
               poles.push(new THREE.BoxGeometry(0.025, 0.025, L).applyMatrix4(mtx(m.x, 9.35, m.z, yawZ(e.u))));
             }
           }
@@ -1375,6 +1698,23 @@ function buildLandmark(ctx, L, ob, e, side, s, extra) {
       body(STYLES.white, w, h, d);
       sign(L.name, Math.min(w * 0.9, 24), 2.4, h - 1.6, { bg: '#0b6e4f', fg: '#fff' });
       break;
+    case 'tirebank': { // 타이어 전문점 (영상 D코스 3:55): 넓은 정비 입구 + 건물 전면 큰 간판 + 길가 기둥 간판
+      body(STYLES.glass, w, h, d);
+      for (let x = -w / 2 + 3; x < w / 2 - 4; x += 7.5) batch.box(MAT.glassDark, 6, 4.6, 0.2, at(x + 3, 2.3, f * (d / 2 + 0.05)));
+      // 1층 정비소 간판 + 옥상 대형 간판 (멀리서도 보이게)
+      batch.box(MAT.blue, w, 2.4, 0.3, at(0, 6.2, f * (d / 2 + 0.12)));
+      sign(L.name, Math.min(w * 0.8, 26), 2.1, 6.2, { bg: '#0b3c8c', fg: '#ffd400' }, 0, f * (d / 2 + 0.3));
+      batch.box(MAT.darkMetal, 24, 0.4, 0.4, at(0, h + 0.2, 0));
+      for (const x of [-10, 0, 10]) batch.box(MAT.darkMetal, 0.3, 5, 0.3, at(x, h + 2.5, 0));
+      // 옥상 간판은 도로를 따라 오는 차에서 보이도록 도로 방향 양쪽을 향하게 (+ 도로 쪽 한 장)
+      for (const xs of [1, -1]) scene.add(signMesh(textTex(L.name, { bg: '#0b3c8c', fg: '#ffd400' }), 14, 4, at(xs * 7, h + 3, 0, faceYaw + xs * Math.PI / 2)));
+      scene.add(signMesh(textTex(L.name, { bg: '#0b3c8c', fg: '#ffd400' }), 24, 4.5, at(0, h + 3, f * 0.3, faceYaw)));
+      const px = w / 2 - 1.5, pz = f * (d / 2 + 5);
+      batch.box(MAT.darkMetal, 0.5, 9, 0.5, at(px, 4.5, pz));
+      for (const yy of [Math.PI / 2, -Math.PI / 2]) scene.add(signMesh(textTex(L.name, { bg: '#0b3c8c', fg: '#ffd400', w: 384, h: 128 }), 4.2, 1.4, at(px, 8.3, pz, yy).multiply(mtx(0, 0, 0.3))));
+      ctx.reserved.push({ x: ob.x, z: ob.z, r: 4 });
+      break;
+    }
     default: // shop, garage, villa, inspection
       body(L.type === 'villa' ? STYLES.brick : STYLES.white, w, h, d);
       if (L.type === 'garage' || L.type === 'inspection') {
@@ -1472,6 +1812,21 @@ function buildForest(ctx) {
         trunks.push(new THREE.CylinderGeometry(0.18, 0.26, th, 5).toNonIndexed().translate(px, y + th / 2, pz));
         const c = new THREE.IcosahedronGeometry(cr, 0);
         c.scale(1, R(1.1, 1.6), 1);
+        c.translate(px, y + th + cr * 0.9, pz);
+        leaves.push(c);
+      }
+    }
+  }
+  // 오류IC 루프 안쪽 숲
+  for (const G of IC_GREEN) {
+    for (let x = G.x - G.r; x < G.x + G.r; x += 7) {
+      for (let z = G.z - G.r; z < G.z + G.r; z += 7) {
+        const px = x + R(-2.5, 2.5), pz = z + R(-2.5, 2.5);
+        if (Math.hypot(px - G.x, pz - G.z) > G.r - 3 || ctx.net.roadClearance(px, pz) < 4) continue;
+        const y = ctx.T.groundY(px, pz), th = R(2.5, 4), cr = R(2, 3.2);
+        trunks.push(new THREE.CylinderGeometry(0.18, 0.26, th, 5).toNonIndexed().translate(px, y + th / 2, pz));
+        const c = new THREE.IcosahedronGeometry(cr, 0);
+        c.scale(1, R(1.1, 1.5), 1);
         c.translate(px, y + th + cr * 0.9, pz);
         leaves.push(c);
       }

@@ -8,6 +8,7 @@ import { Hud } from './hud.js';
 import { Traffic } from './traffic.js';
 import { Peds } from './peds.js';
 import { RAIL, toWorld } from './map.js';
+import { EngineSound } from './sound.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -73,7 +74,7 @@ resize();
 
 // ---------------------------------------------------------------- 입력
 const keys = new Set();
-let running = false, camMode = 'driver';
+let running = false, camMode = 'chase'; // 기본은 차 전체가 보이는 3인칭 (C로 운전석 전환)
 const blinkAudio = { ctx: null, phase: -1 };
 function tick() {
   if (!blinkAudio.ctx) blinkAudio.ctx = new AudioContext();
@@ -86,7 +87,10 @@ function tick() {
 }
 
 // 조작: ←→ 핸들, E 가속, W 브레이크, D·R·N 기어, 1·2 방향지시등
+const engine = new EngineSound();
+addEventListener('pointerdown', () => engine.start());
 addEventListener('keydown', (e) => {
+  engine.start();
   if (['ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
   if (e.repeat) return;
   keys.add(e.code);
@@ -101,6 +105,7 @@ addEventListener('keydown', (e) => {
     case 'KeyM': hud.big = !hud.big; $('bigmap-wrap').hidden = !hud.big; break;
     case 'KeyT': game.toCheckpoint(); break;
     case 'KeyV': hud.voice = !hud.voice; hud.flash(hud.voice ? '음성 안내 켬' : '음성 안내 끔'); break;
+    case 'KeyX': engine.on = !engine.on; hud.flash(engine.on ? '엔진 소리 켬' : '엔진 소리 끔'); break;
   }
 });
 addEventListener('keyup', (e) => keys.delete(e.code));
@@ -151,8 +156,10 @@ function frame() {
   requestAnimationFrame(frame);
   const dt = Math.min(0.05, clock.getDelta());
   const paused = !running || !$('dq').hidden;
+  let input = idle;
   if (!paused) {
-    car.update(dt, game.finished ? { ...idle, brake: 1 } : readInput(), net, world.colliders, traffic.obbs());
+    input = game.finished ? { ...idle, brake: 1 } : readInput();
+    car.update(dt, input, net, world.colliders, traffic.obbs());
     game.update(dt);
   }
   // 방향지시등 소리
@@ -161,6 +168,7 @@ function frame() {
   blinkAudio.phase = ph;
 
   car.updateCamera(camera, camMode);
+  engine.update(car, input.throttle, !paused);
   sun.position.set(car.x + SUN_DIR.x * 200, SUN_DIR.y * 200, car.z + SUN_DIR.z * 200);
   sun.target.position.set(car.x, 0, car.z);
   world.sky.position.copy(camera.position);
@@ -180,3 +188,4 @@ function frame() {
   hud.update(car, game);
 }
 frame();
+window.__ready = true; // index.html 로딩 오류 표시용

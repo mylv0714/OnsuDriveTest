@@ -1,6 +1,6 @@
 // 코스 진행, 신호 표시, 간이 채점
 import { signalGroup, classifyTurn, hasLeftTurn } from './net.js';
-import { signalState, movementAllowed } from './signals.js';
+import { signalState, movementAllowed, rightArrowState } from './signals.js';
 import { project } from './course.js';
 
 function setLamp(mat, on) {
@@ -24,7 +24,7 @@ export class Game {
 
   reset() {
     const { start } = this.route;
-    this.car.place(start.x, start.z, start.yaw);
+    this.car.place(start.x, start.z, start.yaw, start.y || 0); // 출발 지점 노면 높이
     this.t = 0;
     this.score = 100;
     this.log = [];
@@ -43,9 +43,11 @@ export class Game {
     this.hitCool = 0;
     this.wrongT = 0;
     this.stopT = 0; this.stopPenalized = false; this.stopAt = null;
+    this.zebraStop = null; this.guideCheck = null; this.safetyIn = null;
     this.limit = 50;
     this.checkpoint = { ...start, d: 0 };
     this.instrIdx = -1;
+    this.navIdx = 0; this.navStage = 0; this.navDone = false; this.navLimit = null;
     this.hud.reset();
     this.peds.reset();
     this.traffic.reset(this.car);
@@ -75,8 +77,14 @@ export class Game {
         setLamp(s.G, st === 'G' || st === 'GL');
         if (s.A) setLamp(s.A, st === 'L' || st === 'GL');
         const p = n.sig.sets['p' + g];
-        setLamp(p.G, st === 'R');
-        setLamp(p.R, st !== 'R');
+        // 우회전 전용 신호가 녹색·황색이면 우회전 차량이 건너가는 횡단보도는 보행 적색
+        const walk = st === 'R' && !(n.sig.right && n.sig.right.group !== g && rightArrowState(n, n.sig.right.group, this.t) !== 'R');
+        setLamp(p.G, walk);
+        setLamp(p.R, !walk);
+      }
+      if (n.sig.right) {
+        const r = n.sig.sets.right, rs = rightArrowState(n, n.sig.right.group, this.t);
+        setLamp(r.R, rs === 'R'); setLamp(r.Y, rs === 'Y'); setLamp(r.G, rs === 'G');
       }
     }
   }
@@ -113,6 +121,9 @@ export class Game {
 
     // 제한속도: 표지는 그대로(50/30), 감점은 제한속도 +20km/h 이상일 때 (50 구간 → 70km/h)
     if (loc && loc.edge) this.limit = this.net.speedLimit(loc);
+    // 어린이보호구역: 제한속도를 넘으면 바로 실격 (영상 B·D코스 안내)
+    const zone = loc && loc.edge && this.net.zones.find((z) => z.edge === loc.edge && loc.s >= z.s0 && loc.s <= z.s1);
+    if (zone && car.kmh >= zone.limit + 1) this.disqualify(`어린이보호구역 제한속도 초과 (${zone.limit}km/h 구간 ${Math.round(car.kmh)}km/h)`);
     const over = this.limit + SPEED_MARGIN;
     if (car.kmh >= over) {
       if (!this.speeding) { this.speeding = true; this.penalize(`속도위반 (${this.limit}km/h 구간 ${over}km/h 이상)`, 10); }
@@ -154,6 +165,7 @@ export class Game {
 
     this.checkFinish(loc);
     this.updateInstruction();
+    this.updateNav(loc);
   }
 
   // 보행자: 부딪히거나, 보행자가 건너는 횡단보도에 진입하면 실격
@@ -161,13 +173,14 @@ export class Game {
     const car = this.car, f = car.fwd;
     for (const p of this.peds.active) {
       if (Math.abs(p.y - car.ground) > 2) continue;
-      for (const k of [-1.35, 0, 1.35]) {
+      for (const k of moving ? [-1.35, 0, 1.35] : []) {
         if (Math.hypot(car.x + f.x * k - p.x, car.z + f.z * k - p.z) < 1.3) { this.disqualify('교통사고 (보행자 충돌)'); return; }
       }
-      if (!moving || !p.onRoad || p.delay > 0) continue;
+      const waiting = p.cw.zebra && p.waiting; // 신호등 없는 횡단보도: 건너려는 보행자도 보호 대상
+      if (!moving || (!waiting && (!p.onRoad || p.delay > 0))) continue;
       const cw = p.cw, dx = car.x - cw.x, dz = car.z - cw.z;
       if (Math.abs(dx * cw.u.x + dz * cw.u.z) < 2.5 + 2.2 && Math.abs(dx * cw.r.x + dz * cw.r.z) < cw.hw + 0.5) {
-        this.disqualify('보행자 보호의무 위반 (횡단 중인 보행자)');
+        this.disqualify(waiting ? '보행자 보호의무 위반 (건너려는 보행자 앞 통과)' : '보행자 보호의무 위반 (횡단 중인 보행자)');
         return;
       }
     }
@@ -181,7 +194,10 @@ export class Game {
       const dEnd = le.dir > 0 ? e.L - loc.s : loc.s;
       if (node.sig && dEnd < 160 && dEnd > end.stop - 2) {
         const four = node.kind === 'signal' && hasLeftTurn(this.net, e, node);
-        return this.hud.setSignal(signalState(node, signalGroup(e, node), this.t), four);
+        const tv = { x: e.u.x * le.dir, z: e.u.z * le.dir };
+        const straight = node.edges.some((o) => o !== e && dot(this.net.away(o, node), tv) > 0.9);
+        const rs = this.net.hasRightSignal(e, node) ? rightArrowState(node, signalGroup(e, node), this.t) : null;
+        return this.hud.setSignal(signalState(node, signalGroup(e, node), this.t), four, four && !straight, rs);
       }
     }
     this.hud.setSignal(null);
@@ -222,11 +238,26 @@ export class Game {
       const node = cdir > 0 ? e.b : e.a;
       const ql = (o * cdir - e.median / 2) / e.laneW;
       this.entry = {
-        node, edge: e, dir: cdir, time: t, lane: ql < 0 ? 0 : Math.min(e.lanes, Math.floor(ql) + 1),
+        // 일방통행 연결로(무신호 횡단보도 앞)는 차로가 하나뿐 — 좌회전 전용차로(0)로 잘못 보지 않는다
+        node, edge: e, dir: cdir, time: t, lane: e.oneway ? 1 : ql < 0 ? 0 : Math.min(e.nl(cdir), Math.floor(ql) + 1),
         state: node.sig ? signalState(node, signalGroup(e, node), t) : null,
+        rstate: node.sig && this.net.hasRightSignal(e, node) ? rightArrowState(node, signalGroup(e, node), t) : null,
       };
     }
     this.prevDEnd = dEnd;
+
+    // 신호등 없는 횡단보도: 보행자도 앞차도 없는데 3초 넘게 서 있으면 실격 (영상: 후방 추돌 위험)
+    const ahead = cdir > 0 ? e.b : e.a;
+    if (ahead.kind === 'zebra' && dEnd > end.stop - 1 && dEnd < end.stop + 15 && Math.abs(this.car.v) < 0.05) {
+      if (!this.zebraStop || this.zebraStop.node !== ahead) this.zebraStop = { node: ahead, t0: t };
+      const f = this.car.fwd;
+      const busy = this.peds.active.some((p) => p.cw.node === ahead) || this.traffic.obbs().some((c) => {
+        const dx = c.x - this.car.x, dz = c.z - this.car.z, a = dx * f.x + dz * f.z;
+        return a > 0 && a < 15 && Math.abs(dx * f.z - dz * f.x) < 2.5;
+      });
+      if (busy) this.zebraStop.t0 = t;
+      else if (t - this.zebraStop.t0 > 3) { this.zebraStop = null; this.disqualify('신호등 없는 횡단보도 불필요한 정지 (보행자 없음 — 후방 추돌 위험)'); }
+    } else if (this.zebraStop && Math.abs(this.car.v) > 0.5) this.zebraStop = null;
 
     if (!moving || e.oneway) return;
     const inEnds = s < e.ends.a.mark || s > e.L - e.ends.b.mark;
@@ -235,6 +266,24 @@ export class Game {
     // 중앙선 침범
     if (Math.abs(d) > 0.7 && !inEnds && !e.inUturnZone(s) && q < -e.median / 2 - 0.1) this.disqualify('중앙선 침범');
 
+    // 노면 유도선: 교차로를 지난 직후 차로가 들어간 차로와 다르면 교차로 안에서 진로를 바꾼 것
+    const gc = this.guideCheck;
+    if (gc && gc.edge === e && gc.dir === cdir) {
+      const from = cdir > 0 ? s : e.L - s;
+      if (from > 35) this.guideCheck = null;
+      else if (from > 12 && Math.abs(d) > 0.85) {
+        const fl = (q - e.median / 2) / e.laneW, lane = fl < 0 ? 0 : Math.floor(fl) + 1;
+        if (lane >= 1 && lane !== gc.lane) this.penalize(`노면 유도선 미준수 (교차로 안 진로변경 ${gc.lane}차로→${lane}차로)`, 10);
+        this.guideCheck = null;
+      }
+    } else if (gc && gc.edge !== e) this.guideCheck = null;
+
+    // 백색 안전지대 (빗금) 진입
+    const sz = this.net.safety.find((z) => z.edge === e && z.dir === cdir && s > z.s0 && s < z.s1);
+    if (sz && q > e.median / 2 + (sz.lane - 1) * e.laneW + 0.4) {
+      if (this.safetyIn !== sz) { this.safetyIn = sz; this.penalize('안전지대 진입 (빗금 표시 구역)', 7); }
+    } else if (!sz) this.safetyIn = null;
+
     // 차로 변경
     if (Math.abs(d) > 0.85 && s > e.ends.a.mark + 3 && s < e.L - e.ends.b.mark - 3) {
       const fl = (q - e.median / 2) / e.laneW;
@@ -242,7 +291,7 @@ export class Game {
       const frac = fl - Math.floor(fl);
       const pk = e.pocket(cdir);
       const valid = lane > 0 || (pk && s >= pk[0] && s <= pk[1]);
-      if (valid && frac > 0.2 && frac < 0.8 && lane <= e.lanes) {
+      if (valid && frac > 0.2 && frac < 0.8 && lane <= e.nl(cdir)) {
         const lt = this.laneTrack;
         if (lt && lt.edge === e && lt.dir === cdir && lt.lane !== lane) {
           const need = lane < lt.lane ? 'L' : 'R';
@@ -264,14 +313,26 @@ export class Game {
     if (entry && entry.state && !movementAllowed(entry.state, mv)) {
       this.disqualify(mv === 'left' ? '신호위반 (좌회전 신호 아님)' : '신호위반 (적색 신호 진행)');
     }
+    // 노면 유도선이 있는 교차로 직진: 진출 구간에서 차로를 확인한다
+    if (entry && mv === 'straight' && this.net.guides.some((g) => g.node === n && g.eIn === from.edge && g.eOut === to.edge)) {
+      this.guideCheck = { edge: to.edge, dir: to.dir, lane: entry.lane };
+    }
     if (entry) {
       // 지정차로: 좌회전은 좌회전 전용차로(없으면 1차로), 우회전은 끝 차로, 좌회전 전용차로에서는 직진 금지
       const e = from.edge;
-      if (mv === 'left' && entry.lane !== (e.pocket(from.dir) ? 0 : 1)) this.penalize(e.pocket(from.dir) ? '좌회전 지정차로 위반 (좌회전 전용차로 아님)' : '좌회전 지정차로 위반 (1차로 아님)', 10);
-      if (mv === 'right' && entry.lane < e.lanes) this.penalize('우회전 지정차로 위반 (끝 차로 아님)', 10);
-      if (mv === 'straight' && entry.lane === 0) this.penalize('좌회전 전용차로에서 직진', 10);
+      const ok = this.net.laneAllows(e, n, entry.lane, mv); // 노면 화살표로 차로별 진행방향이 지정된 곳
+      const name = { left: '좌회전', right: '우회전', straight: '직진' }[mv];
+      if (ok === false) this.penalize(`지정차로 위반 (${entry.lane}차로에서 ${name} — 노면 화살표 확인)`, 10);
+      else if (ok === null) {
+        if (mv === 'left' && entry.lane !== (e.pocket(from.dir) ? 0 : 1)) this.penalize(e.pocket(from.dir) ? '좌회전 지정차로 위반 (좌회전 전용차로 아님)' : '좌회전 지정차로 위반 (1차로 아님)', 10);
+        if (mv === 'right' && entry.lane < e.nl(from.dir)) this.penalize('우회전 지정차로 위반 (끝 차로 아님)', 10);
+        if (mv === 'straight' && entry.lane === 0) this.penalize(e.uturnAt(from.dir > 0 ? 'b' : 'a') ? '유턴 전용차로에서 직진 (직진 금지)' : '좌회전 전용차로에서 직진', 10);
+      }
       // 우회전 일시정지: 우회전 신호 24시간 적색 진입로는 실격, 그 외 적색 신호 우회전은 감점
-      if (mv === 'right') {
+      if (mv === 'right' && entry.rstate) {
+        // 우회전 전용 신호등: 녹색 화살표에만 우회전 (적색에 일시정지 후 진입해도 실격, 황색·적색에 정지선 침범은 신호위반)
+        if (entry.rstate !== 'G') this.disqualify(`신호위반 (우회전 전용신호 ${entry.rstate === 'Y' ? '황색' : '적색'})`);
+      } else if (mv === 'right') {
         const stopped = this.stopAt && this.stopAt.edge === e && this.t - this.stopAt.t < 60;
         if (!stopped && this.net.rightStop.has(`${e.id}>${n.id}`)) this.disqualify('신호위반 (우회전 적색 신호 일시정지 불이행)');
         else if (!stopped && entry.state && (entry.state === 'R' || entry.state === 'L')) this.penalize('적색 신호 우회전 시 일시정지 불이행', 10);
@@ -323,6 +384,32 @@ export class Game {
     this.car.place(c.x, c.z, c.yaw, c.y || 0);
     this.progress = c.d;
     this.lastEdge = null; this.laneTrack = null; this.entry = null; this.prevDEnd = null; this.stopAt = null;
+  }
+
+  // 내비게이션 음성 (영상의 길안내 멘트): "약 300m 앞 좌회전입니다" → "약 150m 앞 …" → "좌회전입니다", 회전 뒤 "다음 안내시까지 직진입니다"
+  updateNav(loc) {
+    const man = this.route.maneuvers || [], pr = this.progress, say = (t) => this.hud.say(t, true);
+    while (this.navIdx < man.length && man[this.navIdx].d < pr - 3) { this.navIdx++; this.navStage = 0; this.navDone = true; }
+    const m = man[this.navIdx];
+    if (m) {
+      const dist = m.d - pr, name = { left: '좌회전', right: '우회전', U: '유턴' }[m.type];
+      if (this.navStage < 1 && dist <= 320 && dist > 220) { this.navStage = 1; say(`약 300m 앞 ${name}입니다.`); }
+      else if (this.navStage < 2 && dist <= 165 && dist > 70) { this.navStage = 2; say(`약 150m 앞 ${name}입니다.`); }
+      else if (this.navStage < 3 && dist <= 25) { this.navStage = 3; say(`${name}입니다.`); }
+    }
+    const prev = man[this.navIdx - 1];
+    if (this.navDone && prev && pr - prev.d > 30) { this.navDone = false; if (!m || m.d - pr > 450) say('다음 안내시까지 직진입니다.'); }
+    // 제한속도·어린이보호구역 안내
+    if (loc && loc.edge && this.odo > 5) {
+      const zone = this.net.zones.find((z) => z.edge === loc.edge && loc.s >= z.s0 && loc.s <= z.s1);
+      const key = zone ? `z${zone.limit}` : `${this.limit}`;
+      // 구간이 3초 넘게 이어질 때만 안내 (교차로 경계에서 번갈아 말하지 않게)
+      if (key !== this.navCand) { this.navCand = key; this.navCandT = this.t; }
+      if (this.t - this.navCandT > 3 && key !== this.navLimit) {
+        if (this.navLimit !== null) say(zone ? `어린이보호구역입니다. 제한속도 ${zone.limit}km 구간입니다.` : `제한속도 ${this.limit}km 구간입니다.`);
+        this.navLimit = key;
+      }
+    }
   }
 
   updateInstruction() {

@@ -1,5 +1,5 @@
 // 도로망: 노드(교차로)와 구간(도로) 기하 계산
-import { NODES, NODE_H, EDGES, ROAD_TYPES, SIGNAL_NODES, CROSSWALK_NODES, SCHOOL_ZONES, RIGHT_STOP, toWorld } from './map.js';
+import { NODES, NODE_H, EDGES, ROAD_TYPES, SIGNAL_NODES, CROSSWALK_NODES, ZEBRA_NODES, TAPER_NODES, SCHOOL_ZONES, RIGHT_STOP, RIGHT_SIGNALS, LANE_USE, SIGNAL_HEADS, GUIDE_LINES, SAFETY_ZONES, toWorld } from './map.js';
 
 export const CW_W = 5; // 횡단보도 폭(m)
 
@@ -14,25 +14,44 @@ export class Edge {
     this.u = { x: dx / this.L, z: dz / this.L }; // a→b 방향
     this.r = { x: -this.u.z, z: this.u.x }; // a→b 진행 시 오른쪽 (우측통행: +o 쪽이 a→b 차로)
     this.oneway = !!this.oneway;
-    this.hw = this.oneway ? (this.lanes * this.laneW) / 2 : this.median / 2 + this.lanes * this.laneW;
+    // 방향별 차로 수: lanesP = a→b(+o 쪽), lanesN = b→a(-o 쪽). 한쪽만 늘어난 구간(3거리 앞 3차로 등)
+    if (opt.median !== undefined) this.median = opt.median;
+    this.lanesP = opt.lanesP || this.lanes;
+    this.lanesN = opt.lanesN || this.lanes;
+    this.lanes = Math.max(this.lanesP, this.lanesN);
+    this.hw = this.oneway ? (this.lanes * this.laneW) / 2 : this.median / 2 + this.lanes * this.laneW; // 넓은 쪽 기준
+    // 중앙선을 +o 쪽으로 옮기는 거리(m). 좌측에 차로가 새로 생기는 구간은 바깥 가장자리를 이웃 구간과 맞춘다
+    // shiftAB: [a 쪽, b 쪽] 차로 수 — 사이는 서서히 옮긴다 (교차로 건너편 차로가 어긋난 곳)
+    const [sa, sb] = opt.shiftAB || [opt.shiftLanes || 0, opt.shiftLanes || 0];
+    this.shiftA = sa * this.laneW; this.shiftB = sb * this.laneW;
     this.profile = opt.profile || null;
     this.linear = !!opt.linear;
     this.pocketA = opt.pocketA || 0;
     this.pocketB = opt.pocketB || 0;
-    this.uturn = opt.uturn || null; // 'a' | 'b' : 유턴 허용 전용차로가 있는 쪽
+    this.uturn = (opt.uturn || '') + (opt.uturn2 || '') || null; // 'a' | 'b' | 'ab' : 유턴 허용 전용차로가 있는 쪽
     this.bus = !!opt.bus; // 버스전용차로 (바깥 차로)
     this.merge = !!opt.merge;
     this.medianStyle = opt.medianStyle || this.medianStyle || null;
     this.centerPosts = opt.centerPosts || null;
+    this.centerGuard = !!opt.centerGuard; // 전용차로 구간까지 중앙 가드레일
+    this.curve = !!opt.curve; // 미니맵에는 안내도대로 꺾인 모양으로 그리는 곡선 구간
     this.uturnPlate = opt.uturnPlate || null;
     this.name = opt.name || '';
   }
   pt(s, o) {
+    o += this.shiftS(s);
     return { x: this.a.x + this.u.x * s + this.r.x * o, z: this.a.z + this.u.z * s + this.r.z * o };
   }
+  // 노드 n에서 바깥쪽을 볼 때 기준의 중앙선 이동량
+  shiftAt(n) { return n === this.a ? this.shiftA : -this.shiftB; }
+  shiftS(s) { return this.shiftA + ((this.shiftB - this.shiftA) * s) / this.L; }
+  // dir(+1/-1) 방향 차로 수, sg(+1/-1) 쪽 가장자리까지 거리
+  nl(dir) { return this.oneway ? this.lanes : dir > 0 ? this.lanesP : this.lanesN; }
+  hwS(sg) { return this.oneway ? this.hw : this.median / 2 + this.nl(sg) * this.laneW; }
   local(x, z) {
     const dx = x - this.a.x, dz = z - this.a.z;
-    return { s: dx * this.u.x + dz * this.u.z, o: dx * this.r.x + dz * this.r.z };
+    const s = dx * this.u.x + dz * this.u.z;
+    return { s, o: dx * this.r.x + dz * this.r.z - this.shiftS(s) };
   }
   h(s) {
     const p = this.profile;
@@ -62,14 +81,19 @@ export class Edge {
     return null;
   }
   // 유턴 허용 구간 (전용차로 끝 28m) [s0, s1]
+  uturnAt(side) { return !!this.uturn && this.uturn.includes(side); }
+  uturnZones() {
+    const zs = [];
+    if (this.uturnAt('b')) { const p = this.pocket(1); zs.push([p[1] - 28, p[1] + 1]); }
+    if (this.uturnAt('a')) { const p = this.pocket(-1); zs.push([p[0] - 1, p[0] + 28]); }
+    return zs;
+  }
   uturnZone() {
-    if (this.uturn === 'b') { const p = this.pocket(1); return [p[1] - 28, p[1] + 1]; }
-    if (this.uturn === 'a') { const p = this.pocket(-1); return [p[0] - 1, p[0] + 28]; }
+    return this.uturnZones()[0] || null;
     return null;
   }
   inUturnZone(s) {
-    const z = this.uturnZone();
-    return !!z && s > z[0] && s < z[1];
+    return this.uturnZones().some((z) => s > z[0] && s < z[1]);
   }
 }
 
@@ -78,7 +102,7 @@ function endInfo(node, t) {
     const cw0 = t + 0.5, cw1 = cw0 + CW_W;
     return { t, cw: [cw0, cw1], stop: cw1 + 1.2, mark: cw1 + 1.7 };
   }
-  if (node.kind === 'crosswalk') return { t, cw: [0, CW_W / 2], stop: CW_W / 2 + 1.5, mark: CW_W / 2 + 2 };
+  if (node.kind === 'crosswalk' || node.kind === 'zebra') return { t, cw: [0, CW_W / 2], stop: CW_W / 2 + 1.5, mark: CW_W / 2 + 2 };
   return { t, cw: null, stop: 0, mark: t + 0.5 };
 }
 
@@ -114,8 +138,9 @@ export class Net {
     this.nodes = {};
     for (const [id, [px, py]] of Object.entries(NODES)) {
       const p = toWorld(px, py);
-      const kind = SIGNAL_NODES.includes(id) ? 'signal' : CROSSWALK_NODES.includes(id) ? 'crosswalk' : 'plain';
-      this.nodes[id] = { id, x: p.x, z: p.z, h: NODE_H[id] || 0, edges: [], kind };
+      // zebra: 신호등 없는 횡단보도
+      const kind = SIGNAL_NODES.includes(id) ? 'signal' : CROSSWALK_NODES.includes(id) ? 'crosswalk' : ZEBRA_NODES.includes(id) ? 'zebra' : 'plain';
+      this.nodes[id] = { id, x: p.x, z: p.z, h: NODE_H[id] || 0, edges: [], kind, taper: TAPER_NODES.includes(id) };
     }
     this.edges = EDGES.map(([a, b, type, opt]) => {
       const e = new Edge(this.nodes[a], this.nodes[b], type, opt);
@@ -142,7 +167,41 @@ export class Net {
       return { edge: e, s0: Math.max(s0, e.ta), s1: Math.min(s1, e.L - e.tb), limit: z.limit, paint: z.paint !== false };
     });
     // 우회전 시 일시정지가 필요한 진입로: `${edge.id}>${node.id}`
-    this.rightStop = new Set(RIGHT_STOP.map(([from, to]) => `${this.edgeBetween(from, to).id}>${to}`));
+    const key = (from, to) => `${this.edgeBetween(from, to).id}>${to}`;
+    this.rightStop = new Set(RIGHT_STOP.map(([from, to]) => key(from, to)));
+    this.rightSignals = new Set(RIGHT_SIGNALS.map(([from, to]) => key(from, to)));
+    this.laneUseMap = new Map(LANE_USE.map(([from, to, use]) => [key(from, to), use]));
+    this.signalHeads = new Map(SIGNAL_HEADS.map(([from, to, far, near]) => [key(from, to), { far, near }]));
+    // 노면 유도선: 교차로 via를 from → to로 직진하는 차로를 잇는다
+    this.guides = GUIDE_LINES.map(([from, via, to, type]) => {
+      const n = this.nodes[via], eIn = this.edgeBetween(from, via), eOut = this.edgeBetween(via, to);
+      return { node: n, eIn, dIn: n === eIn.b ? 1 : -1, eOut, dOut: n === eOut.a ? 1 : -1, left: type === 'left' };
+    });
+    // 백색 안전지대 (빗금, 진입 금지): dir 방향 lane 차로 자리, 앞쪽 노드 끝에서 from m ~ 뒤쪽 노드 끝에서 toEnd m
+    this.safety = SAFETY_ZONES.map((z) => {
+      const e = this.edgeBetween(...z.edge);
+      const [s0, s1] = z.dir > 0 ? [e.ta + z.from, e.L - e.tb - z.toEnd] : [e.ta + z.toEnd, e.L - e.tb - z.from];
+      return { edge: e, dir: z.dir, lane: z.lane, s0, s1 };
+    });
+  }
+
+  // 교차로 n을 eIn → eOut으로 직진할 때 노면 유도선(같은 번호 차로로 잇는 선)이 있는지
+  hasGuide(n, eIn, eOut) { return this.guides.some((g) => !g.left && g.node === n && g.eIn === eIn && g.eOut === eOut); }
+
+  // 교차로 n으로 들어가는 구간 e에 우회전 전용 신호등이 있는지
+  hasRightSignal(e, n) { return this.rightSignals.has(`${e.id}>${n.id}`); }
+
+  // 교차로 n으로 들어가는 구간 e의 차로별 진행방향 (지정이 없으면 null)
+  laneUse(e, n) { return this.laneUseMap.get(`${e.id}>${n.id}`) || null; }
+
+  // 차로 lane(1..)에서 mv 진행이 허용되는지 (지정 없으면 null)
+  laneAllows(e, n, lane, mv) {
+    const use = this.laneUse(e, n);
+    if (!use || lane < 1) return null;
+    const t = use[Math.min(lane, use.length) - 1];
+    if (mv === 'left') return t === 'left' || t === 'sl';
+    if (mv === 'right') return t === 'right' || t === 'sr';
+    return t === 'straight' || t === 'sl' || t === 'sr';
   }
 
   // 위치(locate 결과)의 제한속도
@@ -163,7 +222,7 @@ export class Net {
     if (n.edges.length === 2 && n.kind === 'plain') {
       const [e1, e2] = n.edges, w1 = this.away(e1, n), w2 = this.away(e2, n);
       const defl = Math.PI - Math.acos(Math.max(-1, Math.min(1, dot(w1, w2))));
-      const t = defl < 0.05 ? 0 : (Math.max(e1.hw, e2.hw) + 0.5) * Math.tan(defl / 2);
+      const t = n.taper ? 14 : defl < 0.05 ? 0 : (Math.max(e1.hw, e2.hw) + 0.5) * Math.tan(defl / 2);
       for (const e of n.edges) if (n === e.a) e.ta = t; else e.tb = t;
       return;
     }
@@ -182,13 +241,16 @@ export class Net {
   }
 
   nodePoly(n) {
-    if (n.edges.length < 2 || n.kind === 'crosswalk') return null;
+    if (n.edges.length < 2 || n.kind === 'crosswalk' || n.kind === 'zebra') return null;
     const pts = [];
     for (const e of n.edges) {
       const w = this.away(e, n), t = n === e.a ? e.ta : e.tb;
       if (t === 0) return null;
       const r = { x: -w.z, z: w.x };
-      for (const sgn of [-1, 1]) pts.push({ x: n.x + w.x * t + r.x * e.hw * sgn, z: n.z + w.z * t + r.z * e.hw * sgn });
+      for (const sgn of [-1, 1]) {
+        const hw = e.hwS(n === e.a ? sgn : -sgn) + e.shiftAt(n) * sgn;
+        pts.push({ x: n.x + w.x * t + r.x * hw * sgn, z: n.z + w.z * t + r.z * hw * sgn });
+      }
     }
     return convexHull(pts);
   }
@@ -206,8 +268,9 @@ export class Net {
       if (gap <= 0) gap += Math.PI * 2;
       if (gap > Math.PI * 0.95) continue; // 반대편이 트인 쪽 (T자 윗변 등)
       const sa = Math.sign(dot(A.r, B.w)) || 1, sb = Math.sign(dot(B.r, A.w)) || 1;
-      const ca = { x: n.x + A.w.x * A.t + A.r.x * sa * A.e.hw, z: n.z + A.w.z * A.t + A.r.z * sa * A.e.hw };
-      const cb = { x: n.x + B.w.x * B.t + B.r.x * sb * B.e.hw, z: n.z + B.w.z * B.t + B.r.z * sb * B.e.hw };
+      const ha = A.e.hwS(n === A.e.a ? sa : -sa) + A.e.shiftAt(n) * sa, hb = B.e.hwS(n === B.e.a ? sb : -sb) + B.e.shiftAt(n) * sb;
+      const ca = { x: n.x + A.w.x * A.t + A.r.x * sa * ha, z: n.z + A.w.z * A.t + A.r.z * sa * ha };
+      const cb = { x: n.x + B.w.x * B.t + B.r.x * sb * hb, z: n.z + B.w.z * B.t + B.r.z * sb * hb };
       // 두 도로 경계선의 교점
       const den = cross(A.w, B.w);
       if (Math.abs(den) < 1e-3) continue;
@@ -246,7 +309,7 @@ export class Net {
     let best = null;
     for (const e of this.edges) {
       const { s, o } = e.local(x, z);
-      if (s < e.ta - 0.5 || s > e.L - e.tb + 0.5 || Math.abs(o) > e.hw + 0.3) continue;
+      if (s < e.ta - 0.5 || s > e.L - e.tb + 0.5 || o > e.hwS(1) + 0.3 || o < -e.hwS(-1) - 0.3) continue;
       if (Math.abs(e.h(s) - y) > 2.5) continue;
       if (!best || Math.abs(o) - e.hw < Math.abs(best.o) - best.edge.hw) best = { edge: e, s, o };
     }
