@@ -138,6 +138,7 @@ function readInput() {
     throttle: Math.max(keys.has('KeyE') ? 1 : 0, touch ? touch.throttle : 0),
     brake: Math.max(keys.has('KeyW') ? 1 : 0, touch ? touch.brake : 0),
     steer: keySteer || (touch ? touch.steer : 0),
+    steerRate: !keySteer && touch ? touch.steerRate : 1,
   };
 }
 

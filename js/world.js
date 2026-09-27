@@ -1341,7 +1341,9 @@ function buildSignals(ctx) {
     }
     const rightE = n.edges.find((e) => net.hasRightSignal(e, n));
     if (rightE) sets.right = { R: lampMat('R'), Y: lampMat('Y'), G: lampMat('G') };
-    n.sig = { sets, offset: (k++ * 17) % 60, right: rightE ? { group: signalGroup(rightE, n) } : null };
+    // 교차도로가 양쪽에서 들어오면(맞은편 직진 차가 있으면) 교차도로 신호도 직진·좌회전을 나눈다
+    const split = n.kind === 'signal' && n.edges.filter((e) => !e.oneway && signalGroup(e, n) === 'cross').length >= 2;
+    n.sig = { sets, offset: (k++ * 17) % 60, right: rightE ? { group: signalGroup(rightE, n) } : null, split };
     out.push(n);
 
     for (const e of n.edges) {

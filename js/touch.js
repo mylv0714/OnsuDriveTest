@@ -26,6 +26,7 @@ export class TouchControls {
   // onAction(code): 키보드 단축키와 같은 코드('KeyD', 'Digit1' 등)를 넘긴다
   constructor(onAction) {
     this.throttle = 0; this.brake = 0; this.steer = 0;
+    this.steerRate = 1.15; // 핸들이 꺾이는 속도 (PC 키보드 대비 15% 빠르게)
     document.body.classList.add('touch');
     $('touch-ui').hidden = false;
     // 브라우저 기본 동작(길게 눌러 메뉴, 두 번 탭 확대) 막기
@@ -66,8 +67,11 @@ export class TouchControls {
     });
     el.addEventListener('pointermove', (e) => {
       if (e.pointerId !== id) return;
-      const range = el.clientWidth * 0.625; // 끝까지 꺾는 데 필요한 드래그 거리 (0.5 → 0.625: 감도 0.8배)
-      set(Math.max(-1, Math.min(1, (e.clientX - x0) / range)));
+      // 끝까지 꺾는 데 필요한 드래그 거리 (0.625 → 0.54: 감도 15% ↑). 핸들이 화면 왼쪽 끝에 붙어 있어
+      // 가운데를 누르고 왼쪽으로 끌면 손가락이 화면 끝에 먼저 닿으므로, 남은 거리 안에서 끝까지 꺾이게 줄인다
+      const dx = e.clientX - x0, room = dx < 0 ? x0 - 6 : innerWidth - x0 - 6;
+      const range = Math.max(20, Math.min(el.clientWidth * 0.54, room));
+      set(Math.max(-1, Math.min(1, dx / range)));
     });
     const up = (e) => { if (e.pointerId !== id) return; id = null; set(0); };
     el.addEventListener('pointerup', up);

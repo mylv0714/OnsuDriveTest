@@ -9,6 +9,7 @@ const SHIFT_UP = [16, 30, 46, 62];
 const GEAR_ACC = [3.6, 3.0, 2.4, 1.8, 1.4];
 const RPM_PER_KMH = [105, 62, 43, 33, 27];
 const IDLE_RPM = 750;
+const MOVE_BOOST = 5 / 3.6; // 표시 속도보다 실제로 더 빨리 움직이는 양 (m/s)
 
 function roofSignTex() {
   const c = document.createElement('canvas');
@@ -108,7 +109,7 @@ export class Car {
     // 조향: 속도가 빠를수록 최대 조향각 감소
     const maxSteer = 0.6 / (1 + (this.v * this.v) / 300);
     const target = input.steer * maxSteer;
-    const rate = input.steer === 0 ? 3.0 : 1.8;
+    const rate = (input.steer === 0 ? 3.0 : 1.8) * (input.steerRate || 1);
     this.steer += Math.max(-rate * dt, Math.min(rate * dt, target - this.steer));
 
     const sgn = this.gear === 'R' ? -1 : 1;
@@ -146,9 +147,11 @@ export class Car {
     this.accel += (a - this.accel) * Math.min(1, dt * 5);
     this.v += a * dt;
 
-    const yaw = this.yaw - ((this.v * Math.tan(this.steer)) / WHEELBASE) * dt;
+    // 실제 이동 속도는 표시 속도보다 조금 빠르게: 약 +5km/h (저속에서는 10%만큼만 — 속도계·제한속도 판정은 표시 속도 그대로)
+    const vMove = this.v + Math.sign(this.v) * Math.min(MOVE_BOOST, Math.abs(this.v) * 0.1);
+    const yaw = this.yaw - ((vMove * Math.tan(this.steer)) / WHEELBASE) * dt;
     const f = { x: Math.sin(yaw), z: Math.cos(yaw) };
-    const nx = this.x + f.x * this.v * dt, nz = this.z + f.z * this.v * dt;
+    const nx = this.x + f.x * vMove * dt, nz = this.z + f.z * vMove * dt;
     const h = net.height(nx, nz, this.ground);
     this.hit = false;
     this.hitCar = false;
