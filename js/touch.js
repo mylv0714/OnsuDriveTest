@@ -1,7 +1,23 @@
 // 모바일 터치 조작: 왼쪽 아래 핸들(좌우 드래그), 오른쪽 아래 페달(브레이크·가속), 기어·방향지시등·기능 버튼
-// 터치 전용 기기에서만 켜진다 (주소 뒤 ?touch=1 강제 켬, ?touch=0 강제 끔). PC 화면·조작은 그대로다.
+// 휴대폰·태블릿에서만 켜진다 (주소 뒤 ?touch=1 강제 켬, ?touch=0 강제 끔). PC 화면·조작은 그대로다.
 const q = new URLSearchParams(location.search).get('touch');
-export const IS_TOUCH = q !== null ? q !== '0' : matchMedia('(pointer: coarse)').matches && !matchMedia('(any-pointer: fine)').matches;
+
+// 주 입력이 손가락이거나 모바일 UA면 터치 모드. S펜 기기(갤럭시 울트라 등)는 '정밀 포인터'도 함께 보고하므로
+// any-pointer로 거르면 안 된다. 터치스크린 노트북은 주 입력이 마우스(fine)라 PC 모드로 남는다.
+export function detectTouch() {
+  if (q !== null) return q !== '0';
+  const ua = navigator.userAgent;
+  return matchMedia('(pointer: coarse)').matches
+    || /Android|iPhone|iPad|iPod|Mobile|SamsungBrowser/i.test(ua)
+    || (navigator.maxTouchPoints > 1 && /Macintosh/.test(ua)); // iPadOS는 데스크톱 UA를 쓴다
+}
+
+// 판별이 빗나가도(데스크톱 모드 등) 실제로 손가락 터치가 들어오면 그때 터치 모드로 전환
+export function onFirstTouch(cb) {
+  if (q === '0') return;
+  const h = (e) => { if (e.pointerType !== 'touch') return; removeEventListener('pointerdown', h, true); cb(); };
+  addEventListener('pointerdown', h, true);
+}
 
 const $ = (id) => document.getElementById(id);
 const capture = (el, id) => { try { el.setPointerCapture(id); } catch { /* 이미 끝난 포인터 */ } };

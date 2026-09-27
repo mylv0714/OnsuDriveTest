@@ -9,13 +9,13 @@ import { Traffic } from './traffic.js';
 import { Peds } from './peds.js';
 import { RAIL, toWorld } from './map.js';
 import { EngineSound } from './sound.js';
-import { IS_TOUCH, TouchControls, enterFullscreen } from './touch.js';
+import { detectTouch, onFirstTouch, TouchControls, enterFullscreen } from './touch.js';
 
 const $ = (id) => document.getElementById(id);
 
 // ---------------------------------------------------------------- 렌더러/장면
 const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? 1.5 : 2)); // 모바일은 해상도를 낮춰 프레임 확보
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -30,7 +30,7 @@ const camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 0.1, 90
 scene.add(new THREE.HemisphereLight(0xd6e6ff, 0x6f6a5e, 1.1));
 const sun = new THREE.DirectionalLight(0xfff4e0, 2.4);
 sun.castShadow = true;
-sun.shadow.mapSize.setScalar(IS_TOUCH ? 1024 : 2048);
+sun.shadow.mapSize.set(2048, 2048);
 Object.assign(sun.shadow.camera, { left: -90, right: 90, top: 90, bottom: -90, near: 10, far: 400 });
 sun.shadow.bias = -0.0004;
 sun.shadow.normalBias = 0.03;
@@ -49,7 +49,7 @@ const peds = new Peds(scene, net);
 const game = new Game({ net, route: routeOf('A'), car, signals: world.signals, hud, traffic, peds });
 
 // ---------------------------------------------------------------- 룸미러
-const MIRROR = IS_TOUCH ? { w: 216, h: 54 } : { w: 360, h: 90 }; // 모바일은 작은 화면에 맞춰 축소
+const MIRROR = { w: 360, h: 90 };
 const mirrorRT = new THREE.WebGLRenderTarget(512, 128);
 const mirrorCam = new THREE.PerspectiveCamera(20, MIRROR.w / MIRROR.h, 0.5, 1500);
 const hudScene = new THREE.Scene();
@@ -66,12 +66,13 @@ function resize() {
   camera.updateProjectionMatrix();
   Object.assign(hudCam, { right: innerWidth, top: innerHeight });
   hudCam.updateProjectionMatrix();
-  mirror.position.set(innerWidth / 2, innerHeight - (IS_TOUCH ? 8 : 14) - MIRROR.h / 2, 0);
+  const ms = touch ? 0.6 : 1; // 모바일은 작은 화면에 맞춰 룸미러 축소 (216×54)
+  mirror.scale.setScalar(ms);
+  mirror.position.set(innerWidth / 2, innerHeight - (touch ? 8 : 14) - (MIRROR.h * ms) / 2, 0);
   const bm = $('bigmap');
-  bm.width = Math.min(innerWidth - (IS_TOUCH ? 40 : 80), 1400); bm.height = Math.min(innerHeight - (IS_TOUCH ? 40 : 120), 800);
+  bm.width = Math.min(innerWidth - (touch ? 40 : 80), 1400); bm.height = Math.min(innerHeight - (touch ? 40 : 120), 800);
 }
 addEventListener('resize', resize);
-resize();
 
 // ---------------------------------------------------------------- 입력
 const keys = new Set();
@@ -117,7 +118,19 @@ function action(code) {
     case 'Menu': showMenu(); break;
   }
 }
-const touch = IS_TOUCH ? new TouchControls(action) : null;
+
+// 모바일 터치 모드: 처음부터 판별되면 바로, 아니면 첫 손가락 터치 때 켠다
+let touch = null;
+function enableTouch() {
+  if (touch) return;
+  touch = new TouchControls(action);
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5)); // 해상도·그림자 품질을 낮춰 프레임 확보
+  sun.shadow.mapSize.set(1024, 1024);
+  if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
+  resize();
+}
+if (detectTouch()) enableTouch(); else onFirstTouch(enableTouch);
+resize();
 
 function readInput() {
   const keySteer = (keys.has('ArrowRight') ? 1 : 0) - (keys.has('ArrowLeft') ? 1 : 0);
@@ -138,11 +151,11 @@ function startCourse(id) {
   $('result').hidden = true;
   $('course-name').textContent = `${id}코스`;
   running = true;
-  if (IS_TOUCH) enterFullscreen();
+  if (touch) enterFullscreen();
 }
 function showMenu() {
   running = false;
-  if (IS_TOUCH) { hud.big = false; $('bigmap-wrap').hidden = true; }
+  if (touch) { hud.big = false; $('bigmap-wrap').hidden = true; }
   $('dq').hidden = true;
   $('result').hidden = true;
   $('start').hidden = false;
