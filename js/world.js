@@ -839,9 +839,9 @@ function buildRoads(ctx) {
       for (const sg of [1, -1]) {
         const n1 = e1.nl(sg * k1), n2 = e2.nl(sg * k2), eW = n1 > n2 ? e1 : e2;
         const c1 = e1.median >= 1 ? e1.median / 2 - 0.1 : 0.18, c2 = e2.median >= 1 ? e2.median / 2 - 0.1 : 0.18;
-        if (n.taper && n1 !== n2) {
-          // 전환 구간에서 차로가 느는 쪽: 넓은 쪽의 각 차선을 좁은 쪽에서 가장 가까운 선(중앙선·차선·가장자리)에서 이어 긋는다
-          //  → 왼쪽에 차로가 생기면 기존 차선은 곧게 이어지고, 새 1차로 경계선은 중앙선에서 갈라져 나온다
+        if (n1 !== n2) {
+          // 차로 수가 바뀌는 곳(전환 구간·갈림길): 넓은 쪽의 각 차선을 좁은 쪽에서 가장 가까운 선(중앙선·차선·가장자리)에서 이어 긋는다
+          //  → 왼쪽에 차로가 생기면 기존 차선은 곧게 이어지고(번호만 하나씩 밀림), 새 1차로 경계선은 중앙선에서 갈라져 나온다 (영상 C코스 7:00)
           const wideIs1 = n1 > n2, eN = wideIs1 ? e2 : e1, sN = wideIs1 ? s2 : s1, kN = wideIs1 ? k2 : k1, sWd = wideIs1 ? s1 : s2, kW = wideIs1 ? k1 : k2;
           const nN = Math.min(n1, n2), cN = wideIs1 ? c2 : c1;
           const qN = [sg * cN, ...Array.from({ length: nN - 1 }, (_, i) => sg * (eN.median / 2 + (i + 1) * eN.laneW)), sg * (eN.hwS(sg * kN) - 0.25)];
