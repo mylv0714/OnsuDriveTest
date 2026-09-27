@@ -2,7 +2,7 @@
 
 ## https://onsudrivetest.vercel.app
 
-<br><br>
+<br>
 
 - `js/map.js` — 안내도 픽셀 좌표로 옮긴 도로망·건물 데이터 (1px = 3m)
 - `js/course.js` — 코스별 경로와 구간 안내
