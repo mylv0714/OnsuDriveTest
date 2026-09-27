@@ -66,7 +66,7 @@ export class TouchControls {
     });
     el.addEventListener('pointermove', (e) => {
       if (e.pointerId !== id) return;
-      const range = el.clientWidth * 0.5;
+      const range = el.clientWidth * 0.625; // 끝까지 꺾는 데 필요한 드래그 거리 (0.5 → 0.625: 감도 0.8배)
       set(Math.max(-1, Math.min(1, (e.clientX - x0) / range)));
     });
     const up = (e) => { if (e.pointerId !== id) return; id = null; set(0); };

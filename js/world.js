@@ -1106,10 +1106,10 @@ function buildOverpass(ctx) {
     ctx.batch.box(MAT.darkConcrete, 2.2, H - 1.1, 1.6, mtx(x, (H - 1.1) / 2, z));
     ctx.colliders.push({ x, z, ux: 1, uz: 0, hu: 1.1, hr: 0.8 });
   }
-  // 이름판 (두 큰길에서 보이도록 상판 양옆)
+  // 이름판 (두 큰길에서 보이도록 상판 양옆) — 철골 거더 옆면 띠(바깥면 W/2+0.12)보다 바깥에 붙여야 글자가 안 가려진다
   const plate = textTex('오류고가차도', { bg: '#1f5f3a', h: 96 });
   for (const zz of [ctx.net.nodes.V1U.z, ctx.net.nodes.V1L.z]) {
-    for (const sx of [-1, 1]) ctx.scene.add(signMesh(plate, 7, 1.2, mtx(x + sx * (W / 2 + 0.05), H - 0.55, zz, yawZ({ x: sx, z: 0 }))));
+    for (const sx of [-1, 1]) ctx.scene.add(signMesh(plate, 7, 1.2, mtx(x + sx * (W / 2 + 0.2), H - 0.55, zz, yawZ({ x: sx, z: 0 }))));
   }
 }
 

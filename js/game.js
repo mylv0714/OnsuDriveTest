@@ -29,6 +29,7 @@ export class Game {
     this.score = 100;
     this.log = [];
     this.dq = null;
+    this.dqSeen = new Map(); // 실격 사유별 마지막 발생 시각 (추가 실격 알림 중복 방지)
     this.finished = false;
     this.progress = 0;
     this.odo = 0;
@@ -61,9 +62,14 @@ export class Game {
   }
 
   disqualify(reason) {
-    if (this.finished || this.dq) return;
-    this.dq = reason;
+    if (this.finished) return;
+    // 같은 사유가 매 프레임 이어지는 경우(중앙선 위 주행 등)는 한 번만: 5초 동안 끊겨야 다시 알린다
+    const seen = this.dqSeen.get(reason);
+    this.dqSeen.set(reason, this.t);
+    if (seen !== undefined && this.t - seen < 5) return;
     this.log.unshift({ reason: `실격: ${reason}`, pts: 0, t: this.t });
+    if (this.dq) { this.hud.flash(`실격: ${reason}`); return; } // 이미 실격이면 감점처럼 알림만
+    this.dq = reason;
     this.hud.showDQ(reason);
   }
 
