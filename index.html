@@ -2,7 +2,9 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
 <title>온수자동차전문학원 도로주행 코스암기</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%273%27 fill=%27%23f2c14e%27/%3E%3C/svg%3E">
 <style>
@@ -91,6 +93,63 @@
   #sig-ra.r { background: #ff2d1a; box-shadow: 0 0 8px #ff2d1a; }
   #sig-ra.y { background: #ffb300; box-shadow: 0 0 8px #ffb300; }
   #course-name { font-size: 12px; opacity: 0.7; margin-bottom: 2px; }
+  /* ------------------------------------------------ 모바일(터치) 전용: body.touch일 때만 적용 */
+  #touch-ui[hidden], #rotate, .touch-only, .touch-help { display: none; }
+  body.touch { --sa-t: env(safe-area-inset-top, 0px); --sa-r: env(safe-area-inset-right, 0px); --sa-b: env(safe-area-inset-bottom, 0px); --sa-l: env(safe-area-inset-left, 0px);
+    --wheel: min(150px, 38vh); --pedal-h: min(128px, 34vh); --pedal-w: min(70px, 19vh); --btn: min(44px, 11vh);
+    touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; overscroll-behavior: none; -webkit-tap-highlight-color: transparent; }
+  body.touch .card { touch-action: pan-y; padding: 14px 16px; }
+  body.touch .card h1 { font-size: 20px; }
+  body.touch #start .card { max-height: calc(100vh - 20px); }
+  body.touch #keys, body.touch .keys-help .kb { display: none; }
+  body.touch .touch-help { display: block; }
+  body.touch .touch-only { display: inline-block; }
+  @media (orientation: portrait) { body.touch #rotate { display: grid; } }
+  #rotate { position: fixed; inset: 0; z-index: 50; background: #111; place-items: center; text-align: center; font-size: 18px; line-height: 1.6; padding: 20px; }
+  #rotate b { font-size: 46px; display: block; }
+
+  body.touch #instr { top: calc(6px + var(--sa-t)); left: calc(6px + var(--sa-l)); width: min(280px, 30vw); padding: 7px 10px 6px; }
+  body.touch #course-name { font-size: 10.5px; }
+  body.touch #instr-title { font-size: 15px; }
+  body.touch #instr-sub { font-size: 11.5px; margin-top: 2px; }
+  body.touch #instr-next { font-size: 10.5px; margin-top: 4px; }
+  body.touch #progress-wrap { margin-top: 5px; }
+  body.touch #mirror-frame { top: 4px; width: 224px; height: 62px; border-radius: 10px; }
+  body.touch #mapbox { top: calc(6px + var(--sa-t)); right: calc(6px + var(--sa-r)); padding: 4px; }
+  body.touch #minimap { width: min(110px, 28vh); height: min(110px, 28vh); }
+  body.touch #mapbox small { display: none; }
+  body.touch #scorebox { top: calc(6px + var(--sa-t) + min(110px, 28vh) + 14px); right: calc(6px + var(--sa-r)); bottom: auto; width: auto; padding: 3px 9px; }
+  body.touch #scorebox .row { gap: 6px; font-size: 10.5px; }
+  body.touch #score { font-size: 18px; }
+  body.touch #log { display: none; }
+  body.touch #dash { left: 50%; transform: translateX(-50%); bottom: calc(6px + var(--sa-b)); padding: 4px 10px; gap: 8px; }
+  body.touch #speed { font-size: 26px; min-width: 44px; }
+  body.touch .unit { font-size: 10px; }
+  body.touch .limit { width: 32px; height: 32px; border-width: 4px; font-size: 12px; }
+  body.touch #gear { font-size: 17px; width: 24px; }
+  body.touch .blink { font-size: 16px; }
+  body.touch #toast { font-size: 16px; top: 30%; }
+  body.touch #bigmap-wrap { inset: 10px; }
+
+  #touch-ui { position: fixed; inset: 0; pointer-events: none; z-index: 4; }
+  #touch-ui > * { pointer-events: auto; position: fixed; touch-action: none; }
+  .tbtn { width: var(--btn); height: var(--btn); border-radius: 10px; background: rgba(18, 22, 28, 0.7); border: 1px solid rgba(255,255,255,.22);
+    color: #eef1f4; display: grid; place-items: center; font-size: 15px; font-weight: 700; padding: 0; }
+  .tbtn.on { background: var(--accent); color: #111; }
+  .tbtn.blinkbtn.on { background: #1fbf52; color: #fff; }
+  #steer { left: calc(14px + var(--sa-l)); bottom: calc(10px + var(--sa-b)); width: var(--wheel); height: var(--wheel); }
+  #steer .wheel-img { width: 100%; height: 100%; transition: transform 0.08s linear; opacity: 0.9; }
+  #t-blink { left: calc(14px + var(--sa-l)); bottom: calc(18px + var(--sa-b) + var(--wheel)); width: var(--wheel); display: flex; justify-content: space-between; }
+  #t-pedals { right: calc(14px + var(--sa-r)); bottom: calc(10px + var(--sa-b)); display: flex; gap: 10px; align-items: flex-end; }
+  .pedal { width: var(--pedal-w); height: var(--pedal-h); border-radius: 12px; border: 2px solid rgba(255,255,255,.3); color: #fff; font-weight: 800; font-size: 13px;
+    display: flex; align-items: flex-end; justify-content: center; padding: 0 0 10px;
+    background: repeating-linear-gradient(0deg, rgba(0,0,0,.35) 0 6px, transparent 6px 14px), #3a4048; }
+  #pedal-brake { width: calc(var(--pedal-w) * 1.25); height: calc(var(--pedal-h) * 0.82); }
+  #pedal-brake.on { background-color: #c62828; transform: scale(0.96); }
+  #pedal-gas.on { background-color: #2e7d32; transform: scale(0.96); }
+  #t-gear { right: calc(14px + var(--sa-r)); bottom: calc(18px + var(--sa-b) + var(--pedal-h)); display: flex; gap: 6px; }
+  #t-util { left: 50%; transform: translateX(-50%); bottom: calc(60px + var(--sa-b)); display: flex; gap: 6px; }
+  #t-util .tbtn { width: auto; min-width: var(--btn); height: calc(var(--btn) * 0.8); font-size: 12px; padding: 0 8px; }
 </style>
 <script>
   // 로딩 오류 표시: 모듈을 불러오지 못하면 첫 화면에서 버튼이 동작하지 않으므로 원인을 화면에 띄운다
@@ -146,14 +205,28 @@
 
 <div id="bigmap-wrap" hidden><canvas id="bigmap"></canvas></div>
 
+<!-- 모바일 터치 조작 (터치 기기에서만 표시) -->
+<div id="touch-ui" hidden>
+  <div id="t-blink"><button class="tbtn blinkbtn" id="tb-l" data-act="Digit1">◀</button><button class="tbtn blinkbtn" id="tb-r" data-act="Digit2">▶</button></div>
+  <div id="steer"><svg class="wheel-img" viewBox="0 0 100 100"><circle cx="50" cy="50" r="44" fill="none" stroke="#1a1d21" stroke-width="10"/><circle cx="50" cy="50" r="44" fill="none" stroke="rgba(255,255,255,.35)" stroke-width="1.5"/>
+    <path d="M8 50 H38 M62 50 H92 M50 62 V93" stroke="#1a1d21" stroke-width="8" stroke-linecap="round"/><circle cx="50" cy="50" r="13" fill="#2a2e33" stroke="rgba(255,255,255,.35)" stroke-width="1.5"/>
+    <rect x="46" y="4" width="8" height="10" rx="2" fill="#ffd60a"/></svg></div>
+  <div id="t-util"><button class="tbtn" data-act="KeyC">시점</button><button class="tbtn" data-act="KeyM">지도</button><button class="tbtn" data-act="KeyT">체크포인트</button><button class="tbtn" data-act="KeyV">음성</button><button class="tbtn" data-act="KeyX">엔진음</button><button class="tbtn" data-act="Menu">메뉴</button></div>
+  <div id="t-gear"><button class="tbtn" data-act="KeyR" data-gear="R">R</button><button class="tbtn" data-act="KeyN" data-gear="N">N</button><button class="tbtn" data-act="KeyD" data-gear="D">D</button></div>
+  <div id="t-pedals"><button class="pedal" id="pedal-brake">브레이크</button><button class="pedal" id="pedal-gas">가속</button></div>
+</div>
+<div id="rotate"><div><b>⟳</b>휴대폰을 가로로 돌려 주세요</div></div>
+
 <div id="start" class="overlay">
   <div class="card">
     <h1>온수자동차전문학원 도로주행 코스암기</h1>
     <h2>학원 도로주행코스도(2026.07.03판) 기준 · 코스를 선택하세요</h2>
     <div class="courses" id="courses"></div>
     <div class="keys-help">
-      <b>조작</b> — <kbd>E</kbd> 가속 · <kbd>W</kbd> 브레이크 · <kbd>←</kbd><kbd>→</kbd> 핸들 · <kbd>1</kbd>/<kbd>2</kbd> 좌/우 방향지시등 ·
-      <kbd>D</kbd> 주행 · <kbd>R</kbd> 후진 · <kbd>N</kbd> 중립 (언제든 바로 변경) · <kbd>C</kbd> 시점 · <kbd>M</kbd> 지도 · <kbd>T</kbd> 체크포인트 · <kbd>V</kbd> 음성<br />
+      <span class="kb"><b>조작</b> — <kbd>E</kbd> 가속 · <kbd>W</kbd> 브레이크 · <kbd>←</kbd><kbd>→</kbd> 핸들 · <kbd>1</kbd>/<kbd>2</kbd> 좌/우 방향지시등 ·
+      <kbd>D</kbd> 주행 · <kbd>R</kbd> 후진 · <kbd>N</kbd> 중립 (언제든 바로 변경) · <kbd>C</kbd> 시점 · <kbd>M</kbd> 지도 · <kbd>T</kbd> 체크포인트 · <kbd>V</kbd> 음성<br /></span>
+      <div class="touch-help"><b>조작</b> — 왼쪽 핸들을 누른 채 좌우로 밀기 · 오른쪽 페달 (왼쪽 브레이크 / 오른쪽 가속) · ◀▶ 방향지시등 · R/N/D 기어 · 가운데 버튼: 시점·지도·체크포인트·음성·엔진음·메뉴
+        <button class="ghost touch-only" id="fullscreen" style="margin:6px 0;padding:6px 14px;font-size:14px">전체화면</button></div>
       <b>채점</b> — 신호위반·중앙선 침범·코스 이탈·차량/보행자 사고·횡단 중인 보행자 무시는 실격 ·
       속도위반(제한속도 +20km/h 이상: 50구간 70, 30구간 50)·방향지시등 미작동·지정차로(좌/우회전·유턴) 위반·정지 5초 이상 D 기어 유지(N 미전환)·연석 침범 감점 · 유턴은 유턴구역에서 보조판(보행신호시) 조건일 때만, 오류철도고가 3거리 우회전은 반드시 일시정지(위반 시 실격) · 70점 이상 합격
     </div>

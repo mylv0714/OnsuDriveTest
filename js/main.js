@@ -9,12 +9,13 @@ import { Traffic } from './traffic.js';
 import { Peds } from './peds.js';
 import { RAIL, toWorld } from './map.js';
 import { EngineSound } from './sound.js';
+import { IS_TOUCH, TouchControls, enterFullscreen } from './touch.js';
 
 const $ = (id) => document.getElementById(id);
 
 // ---------------------------------------------------------------- 렌더러/장면
 const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? 1.5 : 2)); // 모바일은 해상도를 낮춰 프레임 확보
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -29,7 +30,7 @@ const camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 0.1, 90
 scene.add(new THREE.HemisphereLight(0xd6e6ff, 0x6f6a5e, 1.1));
 const sun = new THREE.DirectionalLight(0xfff4e0, 2.4);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.mapSize.setScalar(IS_TOUCH ? 1024 : 2048);
 Object.assign(sun.shadow.camera, { left: -90, right: 90, top: 90, bottom: -90, near: 10, far: 400 });
 sun.shadow.bias = -0.0004;
 sun.shadow.normalBias = 0.03;
@@ -48,7 +49,7 @@ const peds = new Peds(scene, net);
 const game = new Game({ net, route: routeOf('A'), car, signals: world.signals, hud, traffic, peds });
 
 // ---------------------------------------------------------------- 룸미러
-const MIRROR = { w: 360, h: 90 };
+const MIRROR = IS_TOUCH ? { w: 216, h: 54 } : { w: 360, h: 90 }; // 모바일은 작은 화면에 맞춰 축소
 const mirrorRT = new THREE.WebGLRenderTarget(512, 128);
 const mirrorCam = new THREE.PerspectiveCamera(20, MIRROR.w / MIRROR.h, 0.5, 1500);
 const hudScene = new THREE.Scene();
@@ -65,9 +66,9 @@ function resize() {
   camera.updateProjectionMatrix();
   Object.assign(hudCam, { right: innerWidth, top: innerHeight });
   hudCam.updateProjectionMatrix();
-  mirror.position.set(innerWidth / 2, innerHeight - 14 - MIRROR.h / 2, 0);
+  mirror.position.set(innerWidth / 2, innerHeight - (IS_TOUCH ? 8 : 14) - MIRROR.h / 2, 0);
   const bm = $('bigmap');
-  bm.width = Math.min(innerWidth - 80, 1400); bm.height = Math.min(innerHeight - 120, 800);
+  bm.width = Math.min(innerWidth - (IS_TOUCH ? 40 : 80), 1400); bm.height = Math.min(innerHeight - (IS_TOUCH ? 40 : 120), 800);
 }
 addEventListener('resize', resize);
 resize();
@@ -94,8 +95,15 @@ addEventListener('keydown', (e) => {
   if (['ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
   if (e.repeat) return;
   keys.add(e.code);
+  action(e.code);
+});
+addEventListener('keyup', (e) => keys.delete(e.code));
+addEventListener('blur', () => keys.clear());
+
+// 키보드 단축키와 모바일 버튼이 같이 쓰는 기능
+function action(code) {
   if (!running) return;
-  switch (e.code) {
+  switch (code) {
     case 'Digit1': case 'Numpad1': car.toggleBlinker(-1); break;
     case 'Digit2': case 'Numpad2': car.toggleBlinker(1); break;
     case 'KeyD': car.setGear('D'); break;
@@ -106,16 +114,17 @@ addEventListener('keydown', (e) => {
     case 'KeyT': game.toCheckpoint(); break;
     case 'KeyV': hud.voice = !hud.voice; hud.flash(hud.voice ? '음성 안내 켬' : '음성 안내 끔'); break;
     case 'KeyX': engine.on = !engine.on; hud.flash(engine.on ? '엔진 소리 켬' : '엔진 소리 끔'); break;
+    case 'Menu': showMenu(); break;
   }
-});
-addEventListener('keyup', (e) => keys.delete(e.code));
-addEventListener('blur', () => keys.clear());
+}
+const touch = IS_TOUCH ? new TouchControls(action) : null;
 
 function readInput() {
+  const keySteer = (keys.has('ArrowRight') ? 1 : 0) - (keys.has('ArrowLeft') ? 1 : 0);
   return {
-    throttle: keys.has('KeyE') ? 1 : 0,
-    brake: keys.has('KeyW') ? 1 : 0,
-    steer: (keys.has('ArrowRight') ? 1 : 0) - (keys.has('ArrowLeft') ? 1 : 0),
+    throttle: Math.max(keys.has('KeyE') ? 1 : 0, touch ? touch.throttle : 0),
+    brake: Math.max(keys.has('KeyW') ? 1 : 0, touch ? touch.brake : 0),
+    steer: keySteer || (touch ? touch.steer : 0),
   };
 }
 
@@ -129,9 +138,11 @@ function startCourse(id) {
   $('result').hidden = true;
   $('course-name').textContent = `${id}코스`;
   running = true;
+  if (IS_TOUCH) enterFullscreen();
 }
 function showMenu() {
   running = false;
+  if (IS_TOUCH) { hud.big = false; $('bigmap-wrap').hidden = true; }
   $('dq').hidden = true;
   $('result').hidden = true;
   $('start').hidden = false;
@@ -186,6 +197,7 @@ function frame() {
     renderer.autoClear = true;
   }
   hud.update(car, game);
+  if (touch) touch.sync(car);
 }
 frame();
 window.__ready = true; // index.html 로딩 오류 표시용
