@@ -122,7 +122,9 @@ export const SAFETY_ZONES = [{ edge: ['M1', 'M2'], dir: 1, lane: 4, from: 30, to
 //  옵션 nearLamps: 정지선 쪽 신호등 등 구성, unprotected: 건너편 신호등에 비보호 좌회전 표지
 export const SIGNAL_HEADS = [['V1U', 'J3', 3, 3], ['N1', 'J3', 3, 0], // 되돌아오는 길 3거리 좌회전: 앞 3개, 뒤 3개
   // 오류고가차도 교차로 (온수역 쪽에서 진입): 건너편 신호등이 고가 다리에 가려 안 보이므로 다리 앞 정지선 쪽에 3색 신호등 추가
-  ['CW1', 'V1L', 1, 1, { nearLamps: ['R', 'Y', 'G'], unprotected: true }]];
+  ['CW1', 'V1L', 1, 1, { nearLamps: ['R', 'Y', 'G'], unprotected: true }],
+  // 오류고가차도 밑 나머지 진입로도 건너편 신호등이 다리에 가리므로 다리 앞 정지선 쪽에 같은 신호등 추가 (A·B·C코스)
+  ['JC0', 'V1L', 1, 1], ['J3', 'V1U', 1, 1], ['SG', 'V1U', 1, 1]];
 // 우회전 전용 신호등 (직진 신호 오른쪽 별도 1개) [출발 노드, 교차로] — 녹색 화살표일 때만 우회전 (영상 C코스 11:41)
 export const RIGHT_SIGNALS = [['N1', 'J3']];
 
