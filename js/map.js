@@ -17,8 +17,8 @@ export const ROAD_TYPES = {
 };
 
 // 오류IC (경인로 × 남부순환로 입체교차) — 남부순환로가 경인로와 철길 위를 고가로 넘는다 (영상: C코스 7:00~9:10)
-//  경인로를 서쪽으로 가다 남부순환로 고가 앞(SX)에서 오른쪽 차로가 시흥IC 연결로로 갈라지고,
-//  고가 밑에서 4차로로 옮겨 D1에서 우회전 → 무신호 횡단보도 → 암벽을 끼고 도는 루프(R) → 무신호 횡단보도 → 남부순환로 합류(M1).
+//  경인로를 서쪽으로 가다 NA를 지나면 왼쪽(중앙분리대 쪽)에 차로가 생겨 4차로 → 4차로는 SX에서 시흥IC 연결로로 빠져
+//  다시 3차로 (영상 C코스 7:00~7:20) → 남부순환로 고가 밑(DX)에서 오른쪽에 4차로가 다시 생겨 D1에서 우회전 (7:27) → 무신호 횡단보도 → 암벽을 끼고 도는 루프(R) → 무신호 횡단보도 → 남부순환로 합류(M1).
 //  남부순환로로 경인로를 넘은 뒤(M2) 오른쪽으로 빠져 내리막 연결로 → 루프(K) → 무신호 횡단보도 → 경인로 합류(D2).
 //  연결로는 본선과 45°로 만나게 해 합류·분기 모서리가 자연스럽게 한다.
 const IX = (-40 - OX) * S, IZ = -210;
@@ -34,7 +34,7 @@ export const IC_GREEN = [RC, KC].map(([x, z, r]) => ({ x, z, r }));
 const midP = (p, q) => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
 const IC = {
   SX: W(IX + 90, IZ), S1: W(IX + 62, IZ - 40), S2: W(IX + 40, -336.6), // 시흥IC 연결로
-  D1: W(IX - 100, IZ), D2: W(IX - 138, IZ),
+  DX: W(IX + 30, IZ), D1: W(IX - 100, IZ), D2: W(IX - 138, IZ),
   ZR1: W(IX - 100, IZ - 45), ...R_, ZR2: midP(R_.R4, R_.R5), M1: W(IX, -376.6),
   NRS: W(IX, -950), M2: W(IX, -150), NRN: W(IX, 700),
   ...K_, ZK: W(IX - 169.8, -178.2),
@@ -93,7 +93,7 @@ export const NODES = {
 export const SIGNAL_NODES = ['NB', 'J3', 'V1U', 'YH', 'V2U', 'UT', 'V1L', 'V2L', 'YG', 'SS', 'SC'];
 export const CROSSWALK_NODES = ['CW1', 'CW2', 'UT2', 'JF', 'UC'];
 // 차선이 비스듬히 옮겨 가는 전환 구간 (앞뒤 14m를 포장면으로 잇고 차선을 곡선으로 긋는다)
-export const TAPER_NODES = ['V2B']; // 단일로 신호 횡단보도
+export const TAPER_NODES = ['V2B', 'DX']; // V2B: 단일로 신호 횡단보도, DX: 남부순환로 고가 밑 우회전 차로 시작
 // 신호등 없는 횡단보도 (영상: 오류IC 연결로 첫 번째·두 번째·세 번째)
 export const ZEBRA_NODES = ['ZR1', 'ZR2', 'ZK'];
 // 우회전 신호가 24시간 적색인 진입로 [출발 노드, 교차로] — 정지선에서 반드시 일시정지 후 우회전
@@ -103,8 +103,8 @@ export const RIGHT_STOP = [['JF', 'J3']];
 export const LANE_USE = [
   ['CW1', 'V1L', ['left', 'straight']], // 오류고가차도 교차로 앞 (온수역 쪽): 1차로 좌회전
   ['JF', 'J3', ['left', 'left', 'right']], // 오류철도고가 3거리 앞: 1·2차로 좌회전, 3차로 우회전
-  ['NA', 'SX', ['straight', 'straight', 'sr']], // 시흥IC 연결로 갈림: 3차로 직진·우측 (시흥IC로 빠지면 코스 이탈)
-  ['SX', 'D1', ['straight', 'straight', 'straight', 'right']], // 오류IC: 4차로에서 우회전 (남부순환로 김포공항 방면)
+  ['NA', 'SX', ['straight', 'straight', 'straight', 'right']], // 시흥IC 연결로 갈림: 4차로는 시흥IC 전용 (빠지면 코스 이탈)
+  ['DX', 'D1', ['straight', 'straight', 'straight', 'right']], // 오류IC: 4차로에서 우회전 (남부순환로 김포공항 방면)
   ['M1', 'M2', ['straight', 'straight', 'straight', 'right']], // 남부순환로 → 경인로 진출: 4차로
   ['V2B', 'V2U', ['left', 'sl', 'sr']], // 역곡고가교 4거리 앞: 1차로 좌회전, 2차로 좌회전·직진, 3차로 직진·우회전 (영상 B코스 1:53)
   ['VW', 'V2L', ['left', 'sr']], // 동곡초교 4거리 앞: 1차로 좌회전, 2차로 직진·우회전 (영상 B코스 1:25)
@@ -123,6 +123,9 @@ export const SIGNAL_HEADS = [['V1U', 'J3', 3, 3], ['N1', 'J3', 3, 0]]; // 되돌
 // 우회전 전용 신호등 (직진 신호 오른쪽 별도 1개) [출발 노드, 교차로] — 녹색 화살표일 때만 우회전 (영상 C코스 11:41)
 export const RIGHT_SIGNALS = [['N1', 'J3']];
 
+// 서쪽 방향 왼쪽에 차로가 생긴 경인로 구간 (NA~D1): 분리대를 좁히고 중앙선을 옮긴다
+const LEFT_LANE = { median: 0.5, shiftLanes: 1.45 / 3.3 };
+
 // [a, b, 도로종류, 옵션]
 // pocketA/pocketB: a/b 쪽으로 가는 차로의 좌회전(유턴) 전용차로 길이(m), uturn: 유턴이 허용되는 쪽('a'|'b')
 // profile: [a로부터 거리, 높이] — 철도/도로를 넘는 고가 구간 (linear: 직선 경사)
@@ -131,9 +134,13 @@ export const RIGHT_SIGNALS = [['N1', 'J3']];
 // centerPosts: 중앙선 위 시선유도봉 posts(황흑) | bollard(주황 규제봉)
 // uturnPlate: 유턴 표지 보조판 — '보행신호시'면 보행 신호(차량 적색)일 때만 유턴
 export const EDGES = [
-  // 서쪽 방향: 고가 밑에서 4차로(오류IC 우회전 차로)가 생긴다 / 동쪽 방향: 진출 루프가 합류해 NA까지 4차로 (영상 9:12)
+  // 서쪽 방향 (영상 C코스 7:00~7:27): NA를 지나면 왼쪽에 차로가 생겨 4차로 (주행 차로 2 → 3차로, 포켓차로 아님)
+  //   → 4차로는 SX에서 시흥IC 연결로로 빠져 3차로 → 남부순환로 고가 밑(DX)에서 오른쪽에 4차로(오류IC 우회전 차로)가 생긴다
+  //   왼쪽 차로는 중앙분리대를 중앙선으로 좁혀(median 0.5) 만들고, 중앙선을 옮겨 동쪽 방향 차로는 그대로 둔다 (N1~J3과 같은 방식)
+  // 동쪽 방향: 진출 루프가 합류해 NA까지 4차로 (영상 9:12)
   ['W0', 'D2', 'arterial', { merge: true }], ['D2', 'D1', 'arterial', { merge: true, lanesP: 4 }],
-  ['D1', 'SX', 'arterial', { merge: true, lanesN: 4, lanesP: 4 }], ['SX', 'NA', 'arterial', { merge: true, lanesP: 4 }],
+  ['D1', 'DX', 'arterial', { merge: true, lanesN: 4, lanesP: 4, ...LEFT_LANE }], ['DX', 'SX', 'arterial', { merge: true, lanesP: 4, ...LEFT_LANE }],
+  ['SX', 'NA', 'arterial', { merge: true, lanesN: 4, lanesP: 4, ...LEFT_LANE }],
   // 오류지하차도 앞 3거리(NB) 건너편은 차로가 한 칸 바깥으로 어긋나 있다 → 노면 유도선 (영상 5:40)
   ['NA', 'NB', 'arterial', { shiftAB: [0, -1] }],
   // 오류철도고가: 경인로가 3거리(J3) 부근에서 철길 위로 올라간다
