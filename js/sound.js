@@ -1,11 +1,11 @@
 // 엔진·주행 소리 (Web Audio 합성): 회전수에 따라 높아지는 엔진음 + 폭발 맥동 + 속도에 따른 타이어·노면 소음
-// 브라우저 정책상 첫 키 입력·클릭 뒤에 start()로 켠다
+// 브라우저 정책상 사용자 입력 안에서 만든 AudioContext를 start()로 넘겨받아 켠다
 export class EngineSound {
   constructor() { this.ctx = null; this.on = true; }
 
-  start() {
-    if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume(); return; }
-    const a = (this.ctx = new AudioContext());
+  start(a) {
+    if (this.ctx) return;
+    this.ctx = a;
     this.master = a.createGain();
     this.master.gain.value = 0;
     this.master.connect(a.destination);

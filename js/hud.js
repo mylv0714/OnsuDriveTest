@@ -86,6 +86,15 @@ export class Hud {
     return this._voice;
   }
 
+  // iOS(카카오톡 포함)는 첫 음성을 사용자 입력 안에서 한 번 내야 이후 안내가 나온다. 무음으로 미리 열어 둔다.
+  unlockVoice() {
+    if (this.voiceReady || !window.speechSynthesis) return;
+    this.voiceReady = true;
+    const u = new SpeechSynthesisUtterance(' ');
+    u.volume = 0;
+    speechSynthesis.speak(u);
+  }
+
   say(text, nav = false) {
     if (!this.voice || !window.speechSynthesis) return;
     // 길안내는 앞 멘트를 끊지 않고 이어서 (단, 밀려 있으면 오래된 것은 버린다)

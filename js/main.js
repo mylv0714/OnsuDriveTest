@@ -77,10 +77,29 @@ addEventListener('resize', resize);
 // ---------------------------------------------------------------- 입력
 const keys = new Set();
 let running = false, camMode = 'chase'; // 기본은 차 전체가 보이는 3인칭 (C로 운전석 전환)
-const blinkAudio = { ctx: null, phase: -1 };
+// 소리: 카카오톡 같은 인앱 브라우저(WebView)는 탭이 끝나는 순간(pointerup·touchend·click)이나 키 입력 안에서
+// 만들거나 재개한 AudioContext만 소리를 낸다. pointerdown이나 화면 갱신 루프에서 만들면 계속 멈춘 채로 남는다.
+// 백그라운드에 다녀오면 다시 멈출 수 있어 입력이 있을 때마다 확인한다.
+const engine = new EngineSound();
+let audio = null;
+function unlockAudio() {
+  if (!audio) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (navigator.audioSession) navigator.audioSession.type = 'playback'; // iOS 무음 모드에서도 소리
+    audio = new AC();
+    engine.start(audio);
+  }
+  if (audio.state !== 'running' && audio.state !== 'closed') audio.resume().catch(() => {});
+  hud.unlockVoice();
+}
+for (const t of ['pointerup', 'touchend', 'click', 'keydown']) addEventListener(t, unlockAudio, true);
+
+const blinkAudio = { phase: -1 };
 function tick() {
-  if (!blinkAudio.ctx) blinkAudio.ctx = new AudioContext();
-  const a = blinkAudio.ctx, o = a.createOscillator(), g = a.createGain();
+  const a = audio;
+  if (!a || a.state !== 'running') return;
+  const o = a.createOscillator(), g = a.createGain();
   o.type = 'square'; o.frequency.value = 1800;
   g.gain.setValueAtTime(0.05, a.currentTime);
   g.gain.exponentialRampToValueAtTime(0.0001, a.currentTime + 0.03);
@@ -89,10 +108,7 @@ function tick() {
 }
 
 // 조작: ←→ 핸들, E 가속, W 브레이크, D·R·N 기어, 1·2 방향지시등
-const engine = new EngineSound();
-addEventListener('pointerdown', () => engine.start());
 addEventListener('keydown', (e) => {
-  engine.start();
   if (['ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
   if (e.repeat) return;
   keys.add(e.code);
@@ -173,6 +189,11 @@ $('dq-restart').onclick = () => { game.reset(); };
 $('dq-menu').onclick = showMenu;
 $('result-restart').onclick = () => { game.reset(); };
 $('result-menu').onclick = showMenu;
+// 안드로이드 카카오톡 인앱 브라우저(WebView)에는 음성 합성 엔진이 없어 안내 음성이 나오지 않는다 → 기본 브라우저로 열도록 안내
+if (/KAKAOTALK/i.test(navigator.userAgent) && /Android/i.test(navigator.userAgent)) {
+  $('kakao').hidden = false;
+  $('kakao-open').onclick = () => { location.href = `kakaotalk://web/openExternal?url=${encodeURIComponent(location.href)}`; };
+}
 
 // ---------------------------------------------------------------- 루프
 const clock = new THREE.Clock();
