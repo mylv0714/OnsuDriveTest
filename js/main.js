@@ -141,6 +141,7 @@ let touch = null;
 function enableTouch() {
   if (touch) return;
   touch = new TouchControls(action);
+  engine.small = true; // 휴대폰 스피커에서도 엔진음이 들리게
   renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5)); // 해상도·그림자 품질을 낮춰 프레임 확보
   sun.shadow.mapSize.set(1024, 1024);
   if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }

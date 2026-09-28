@@ -86,9 +86,11 @@ export class Hud {
     return this._voice;
   }
 
-  // iOS(카카오톡 포함)는 첫 음성을 사용자 입력 안에서 한 번 내야 이후 안내가 나온다. 무음으로 미리 열어 둔다.
+  // iOS는 첫 음성을 사용자 입력 안에서 한 번 내야 이후 안내가 나온다. 무음으로 미리 열어 둔다.
+  // 안드로이드에서는 하지 않는다: 빈 문장이 끝나지 않고 대기열을 막아 첫 안내가 묻힐 수 있다.
   unlockVoice() {
-    if (this.voiceReady || !window.speechSynthesis) return;
+    const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
+    if (this.voiceReady || !ios || !window.speechSynthesis) return;
     this.voiceReady = true;
     const u = new SpeechSynthesisUtterance(' ');
     u.volume = 0;

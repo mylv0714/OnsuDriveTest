@@ -1,7 +1,9 @@
 // 엔진·주행 소리 (Web Audio 합성): 회전수에 따라 높아지는 엔진음 + 폭발 맥동 + 속도에 따른 타이어·노면 소음
 // 브라우저 정책상 사용자 입력 안에서 만든 AudioContext를 start()로 넘겨받아 켠다
+const MID_GAIN = 2.2;
+
 export class EngineSound {
-  constructor() { this.ctx = null; this.on = true; }
+  constructor() { this.ctx = null; this.on = true; this.small = false; } // small: 휴대폰 스피커용 중음역 보강
 
   start(a) {
     if (this.ctx) return;
@@ -39,6 +41,13 @@ export class EngineSound {
     const bp = a.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 420; bp.Q.value = 0.6;
     this.road = a.createGain(); this.road.gain.value = 0;
     src.connect(bp).connect(this.road).connect(this.master); src.start();
+
+    // 휴대폰 스피커는 300Hz 아래를 거의 못 내서 위 엔진음(대부분 25~170Hz)이 들리지 않는다.
+    // 같은 폭발 주파수의 톱니파에서 중음역 배음만 골라 더한다 — 귀는 배음 간격으로 낮은 엔진 음높이를 느낀다.
+    this.midOsc = a.createOscillator(); this.midOsc.type = 'sawtooth'; this.midOsc.start();
+    this.midBp = a.createBiquadFilter(); this.midBp.type = 'bandpass'; this.midBp.frequency.value = 450; this.midBp.Q.value = 0.9;
+    this.mid = a.createGain(); this.mid.gain.value = 0;
+    this.midOsc.connect(this.midBp).connect(this.mid).connect(this.pulse);
   }
 
   // throttle: 0~1, active: 주행 중(일시정지·메뉴가 아님)
@@ -52,5 +61,8 @@ export class EngineSound {
     const vol = this.on && active ? 0.08 + throttle * 0.05 + Math.min(0.05, car.rpm / 90000) : 0;
     this.master.gain.setTargetAtTime(vol, t, 0.15);
     this.road.gain.setTargetAtTime(Math.min(0.9, Math.abs(car.v) / 16) * 0.28, t, 0.3);
+    this.midOsc.frequency.setTargetAtTime(fire, t, k);
+    this.midBp.frequency.setTargetAtTime(380 + throttle * 250 + car.rpm * 0.05, t, 0.12);
+    this.mid.gain.setTargetAtTime(this.small ? MID_GAIN * Math.sqrt(750 / Math.max(750, car.rpm)) : 0, t, 0.15);
   }
 }
