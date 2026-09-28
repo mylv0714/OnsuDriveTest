@@ -77,8 +77,9 @@ addEventListener('resize', resize);
 // ---------------------------------------------------------------- 입력
 const keys = new Set();
 let running = false, camMode = 'chase'; // 기본은 차 전체가 보이는 3인칭 (C로 운전석 전환)
-// 소리: 카카오톡 같은 인앱 브라우저(WebView)는 탭이 끝나는 순간(pointerup·touchend·click)이나 키 입력 안에서
+// 소리: 카카오톡 같은 인앱 브라우저(WebView)는 터치가 끝나는 순간(touchend·click)이나 키 입력 안에서
 // 만들거나 재개한 AudioContext만 소리를 낸다. pointerdown이나 화면 갱신 루프에서 만들면 계속 멈춘 채로 남는다.
+// pointerup도 쓰면 안 된다: iOS는 이를 사용자 입력으로 치지 않아 여기서 음성을 먼저 열면 이후 안내가 막힌다.
 // 백그라운드에 다녀오면 다시 멈출 수 있어 입력이 있을 때마다 확인한다.
 const engine = new EngineSound();
 let audio = null;
@@ -93,7 +94,7 @@ function unlockAudio() {
   if (audio.state !== 'running' && audio.state !== 'closed') audio.resume().catch(() => {});
   hud.unlockVoice();
 }
-for (const t of ['pointerup', 'touchend', 'click', 'keydown']) addEventListener(t, unlockAudio, true);
+for (const t of ['touchend', 'click', 'keydown']) addEventListener(t, unlockAudio, true);
 
 const blinkAudio = { phase: -1 };
 function tick() {
@@ -189,11 +190,6 @@ $('dq-restart').onclick = () => { game.reset(); };
 $('dq-menu').onclick = showMenu;
 $('result-restart').onclick = () => { game.reset(); };
 $('result-menu').onclick = showMenu;
-// 안드로이드 카카오톡 인앱 브라우저(WebView)에는 음성 합성 엔진이 없어 안내 음성이 나오지 않는다 → 기본 브라우저로 열도록 안내
-if (/KAKAOTALK/i.test(navigator.userAgent) && /Android/i.test(navigator.userAgent)) {
-  $('kakao').hidden = false;
-  $('kakao-open').onclick = () => { location.href = `kakaotalk://web/openExternal?url=${encodeURIComponent(location.href)}`; };
-}
 
 // ---------------------------------------------------------------- 루프
 const clock = new THREE.Clock();
